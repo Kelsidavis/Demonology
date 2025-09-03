@@ -45,8 +45,8 @@ class DemonologyApp:
         Resolve a stable SAFE_ROOT in this order:
         1) config.tools.working_directory (if set)
         2) $GRIMOIRE_SAFE_ROOT (if set)
-        3) project root (parent of this package dir)
-        4) current working directory
+        3) current working directory (where user called command)
+        4) user home directory (fallback)
         """
         # 1) config
         cfg = getattr(self.config.tools, "working_directory", "") or ""
@@ -56,16 +56,15 @@ class DemonologyApp:
         env_root = os.environ.get("GRIMOIRE_SAFE_ROOT", "")
         if env_root:
             return Path(env_root).expanduser().resolve()
-        # 3) project root (…/Demonology), i.e. parent of the package directory
+        # 3) current working directory - prioritize where user called command
         try:
-            pkg_dir = Path(__file__).resolve().parent          # …/demonology
-            project_root = pkg_dir.parent                      # …/Demonology
-            if project_root.exists():
-                return project_root
+            current_dir = Path.cwd().resolve()
+            if current_dir.exists():
+                return current_dir
         except Exception:
             pass
-        # 4) cwd
-        return Path.cwd().resolve()
+        # 4) user home directory (fallback)
+        return Path.home().resolve()
 
     async def initialize(self):
         """Initialize the application."""
@@ -412,18 +411,31 @@ Config file: {cfg.config_path}
             await self.ui.stop_loading()  # Ensure loading stops on error
             
             # For 500 errors, try to recover gracefully
-            if "500" in str(e):
-                self.ui.display_error("Server error occurred. Conversation history may be corrupted. Continuing...")
-                # Clear conversation history to recover from 500 errors
-                user_messages = [msg for msg in self.conversation_history if msg.get("role") == "user"]
-                if user_messages:
-                    self.conversation_history = user_messages[-3:]  # Keep last 3 user messages
-                logger.warning("Cleared conversation history to recover from 500 error")
+            if "500" in str(e) or isinstance(e, DemonologyAPIError):
+                self.ui.display_error("𐕣 Server error occurred. Conversation history may be corrupted. Continuing... 𐕣")
+                # More graceful conversation history recovery
+                try:
+                    # Keep system messages and recent user/assistant pairs
+                    system_msgs = [msg for msg in self.conversation_history if msg.get("role") == "system"]
+                    user_msgs = [msg for msg in self.conversation_history if msg.get("role") == "user"]
+                    assistant_msgs = [msg for msg in self.conversation_history if msg.get("role") == "assistant"]
+                    
+                    # Keep last 2 user messages and their responses
+                    if user_msgs:
+                        recent_users = user_msgs[-2:]
+                        # Try to maintain conversation pairs
+                        self.conversation_history = system_msgs + recent_users
+                        logger.warning(f"Recovered conversation history: kept {len(self.conversation_history)} messages")
+                except Exception as recovery_error:
+                    logger.error(f"Failed to recover conversation history: {recovery_error}")
+                    self.conversation_history = []
             
+            # Return partial content if available, otherwise display error but don't crash
             if content_buffer.strip():
                 return content_buffer
             else:
-                raise
+                self.ui.display_error(f"𐕣 API Error: {str(e)} 𐕣")
+                return ""
 
         # If we never received any chunks, stop loading now
         if not first_chunk_received:
@@ -513,13 +525,30 @@ Config file: {cfg.config_path}
         tools = self.tool_registry.to_openai_tools_format()
         
         # Truncate conversation history if it's too long to avoid 500 errors
-        max_history_length = 20
+        max_history_length = 15  # Reduced to prevent server overload
         if len(self.conversation_history) > max_history_length:
-            # Keep system message if present, and recent messages
-            system_msgs = [msg for msg in self.conversation_history if msg.get("role") == "system"]
-            recent_msgs = self.conversation_history[-(max_history_length-len(system_msgs)):]
-            self.conversation_history = system_msgs + recent_msgs
-            logger.warning(f"Truncated conversation history to {len(self.conversation_history)} messages")
+            try:
+                # Keep system message if present, and recent messages
+                system_msgs = [msg for msg in self.conversation_history if msg.get("role") == "system"]
+                user_msgs = [msg for msg in self.conversation_history if msg.get("role") == "user"]
+                assistant_msgs = [msg for msg in self.conversation_history if msg.get("role") == "assistant"]
+                tool_msgs = [msg for msg in self.conversation_history if msg.get("role") == "tool"]
+                
+                # Keep recent conversation pairs (user + assistant + tool results)
+                recent_length = max_history_length - len(system_msgs)
+                if recent_length > 0:
+                    # Take the most recent messages, trying to keep complete conversation turns
+                    recent_msgs = self.conversation_history[-recent_length:]
+                    self.conversation_history = system_msgs + recent_msgs
+                else:
+                    # If too many system messages, just keep them
+                    self.conversation_history = system_msgs
+                
+                logger.warning(f"Truncated conversation history to {len(self.conversation_history)} messages")
+            except Exception as truncate_error:
+                logger.error(f"Failed to truncate conversation history: {truncate_error}")
+                # Fallback: keep only recent messages
+                self.conversation_history = self.conversation_history[-5:]
         
         logger.warning(f"Conversation history before follow-up request: {json.dumps(self.conversation_history[-3:], indent=2)}")
         follow_stream = self.client.stream_chat_completion(self.conversation_history, tools=tools)
@@ -604,20 +633,30 @@ Config file: {cfg.config_path}
             logger.exception("Error processing streaming response")
             
             # For 500 errors, try to recover gracefully
-            if "500" in str(e):
-                self.ui.display_error("Server error occurred. Conversation history may be corrupted. Continuing...")
-                # Clear conversation history to recover from 500 errors
-                user_messages = [msg for msg in self.conversation_history if msg.get("role") == "user"]
-                if user_messages:
-                    self.conversation_history = user_messages[-3:]  # Keep last 3 user messages
-                logger.warning("Cleared conversation history to recover from 500 error")
+            if "500" in str(e) or isinstance(e, DemonologyAPIError):
+                self.ui.display_error("𐕣 Server error occurred. Conversation history may be corrupted. Continuing... 𐕣")
+                # More graceful conversation history recovery
+                try:
+                    # Keep system messages and recent user/assistant pairs
+                    system_msgs = [msg for msg in self.conversation_history if msg.get("role") == "system"]
+                    user_msgs = [msg for msg in self.conversation_history if msg.get("role") == "user"]
+                    
+                    # Keep last 2 user messages
+                    if user_msgs:
+                        recent_users = user_msgs[-2:]
+                        self.conversation_history = system_msgs + recent_users
+                        logger.warning(f"Recovered conversation history: kept {len(self.conversation_history)} messages")
+                except Exception as recovery_error:
+                    logger.error(f"Failed to recover conversation history: {recovery_error}")
+                    self.conversation_history = []
             
-            # If there's an error during streaming, return whatever content we have
+            # Return partial content if available, otherwise return empty string
             if content_buffer.strip():
                 return content_buffer
             else:
-                # Re-raise the error if we have no content to return
-                raise
+                # Don't re-raise errors - return empty response to continue conversation
+                self.ui.display_error(f"𐕣 API Error: {str(e)} 𐕣")
+                return ""
 
         # If we got normal content and NO function calls, try one fallback.
         if content_buffer.strip() and not tool_calls:
@@ -776,11 +815,17 @@ Config file: {cfg.config_path}
                     self.conversation_history.append({"role": "assistant", "content": full_response})
                 except DemonologyAPIError as e:
                     await self.ui.stop_loading()
-                    self.ui.display_error(f"API Error: {str(e)}")
+                    # More user-friendly error display
+                    if "500" in str(e):
+                        self.ui.display_error("𐕣 API Error: HTTP error 500: Unable to read error details 𐕣")
+                    else:
+                        self.ui.display_error(f"𐕣 API Error: {str(e)} 𐕣")
+                    # Continue conversation instead of breaking
                 except Exception as e:
                     await self.ui.stop_loading()
                     logger.exception("Unexpected error in chat loop")
-                    self.ui.display_error(f"Unexpected error: {str(e)}")
+                    # More consistent error formatting
+                    self.ui.display_error(f"𐕣 Unexpected error: {str(e)} 𐕣")
                     # Continue the conversation loop instead of breaking
 
             except KeyboardInterrupt:

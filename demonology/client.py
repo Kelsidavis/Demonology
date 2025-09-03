@@ -30,7 +30,14 @@ class DemonologyClient:
         self.temperature = temperature
         self.top_p = top_p
         self.timeout = timeout
-        self._client = httpx.AsyncClient(timeout=timeout)
+        # Create timeout configuration with longer read timeout for streaming
+        timeout_config = httpx.Timeout(
+            connect=10.0,  # Connection timeout
+            read=timeout * 2,  # Read timeout for streaming responses
+            write=30.0,  # Write timeout
+            pool=10.0  # Pool timeout
+        )
+        self._client = httpx.AsyncClient(timeout=timeout_config)
     
     async def __aenter__(self):
         return self
@@ -125,13 +132,22 @@ class DemonologyClient:
                 # Try to read the response content for error details
                 error_content = await e.response.aread()
                 error_text = error_content.decode('utf-8', errors='replace') if error_content else 'No error details'
+                # Limit error text length to prevent overwhelming output
+                if len(error_text) > 200:
+                    error_text = error_text[:200] + "..."
                 error_msg = f"HTTP error {e.response.status_code}: {error_text}"
             except Exception:
                 # If we can't read the response, just use the status code
                 error_msg = f"HTTP error {e.response.status_code}: Unable to read error details"
             raise DemonologyAPIError(error_msg) from e
+        except httpx.TimeoutException as e:
+            error_msg = f"Request timeout: The server took too long to respond"
+            raise DemonologyAPIError(error_msg) from e
         except httpx.RequestError as e:
             error_msg = f"Network error: {str(e)}"
+            raise DemonologyAPIError(error_msg) from e
+        except Exception as e:
+            error_msg = f"Unexpected error during streaming: {str(e)}"
             raise DemonologyAPIError(error_msg) from e
     
     async def chat_completion(
@@ -171,13 +187,22 @@ class DemonologyClient:
                 # Try to read the response content for error details
                 error_content = await e.response.aread()
                 error_text = error_content.decode('utf-8', errors='replace') if error_content else 'No error details'
+                # Limit error text length to prevent overwhelming output
+                if len(error_text) > 200:
+                    error_text = error_text[:200] + "..."
                 error_msg = f"HTTP error {e.response.status_code}: {error_text}"
             except Exception:
                 # If we can't read the response, just use the status code
                 error_msg = f"HTTP error {e.response.status_code}: Unable to read error details"
             raise DemonologyAPIError(error_msg) from e
+        except httpx.TimeoutException as e:
+            error_msg = f"Request timeout: The server took too long to respond"
+            raise DemonologyAPIError(error_msg) from e
         except httpx.RequestError as e:
             error_msg = f"Network error: {str(e)}"
+            raise DemonologyAPIError(error_msg) from e
+        except Exception as e:
+            error_msg = f"Unexpected error during streaming: {str(e)}"
             raise DemonologyAPIError(error_msg) from e
     
     async def test_connection(self) -> bool:
