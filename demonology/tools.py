@@ -17,7 +17,14 @@ logger = logging.getLogger(__name__)
 # Safety fence
 # ---------------------------------------------------------------------
 
-SAFE_ROOT = Path(os.environ.get("GRIMOIRE_SAFE_ROOT", Path.cwd())).resolve()
+def _get_default_safe_root() -> Path:
+    """Get the default safe root, checking environment first."""
+    env_root = os.environ.get("GRIMOIRE_SAFE_ROOT", "")
+    if env_root:
+        return Path(env_root).resolve()
+    return Path.cwd().resolve()
+
+SAFE_ROOT = _get_default_safe_root()
 
 IMMUTABLE_BLOCK_PATTERNS = [
     r"rm\s+-rf\s+/(?:\s|$)",
@@ -267,6 +274,7 @@ class CodebaseAnalysisTool(Tool):
     def __init__(self, safe_root: Optional[Path] = None):
         super().__init__("codebase_analysis", "Explore and search codebases safely.")
         self.safe_root: Path = (safe_root or SAFE_ROOT).resolve()
+        logger.info(f"CodebaseAnalysisTool initialized with safe_root: {self.safe_root}")
 
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -496,8 +504,9 @@ class CodebaseAnalysisTool(Tool):
 # ---------------------------------------------------------------------
 
 class CodeExecutionTool(Tool):
-    def __init__(self):
+    def __init__(self, safe_root: Optional[Path] = None):
         super().__init__("code_execution", "Execute small code snippets in a sandboxed subprocess.")
+        self.safe_root = safe_root or SAFE_ROOT
 
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -529,7 +538,7 @@ class CodeExecutionTool(Tool):
                     code,
                     stdout=aio.subprocess.PIPE,
                     stderr=aio.subprocess.PIPE,
-                    cwd=str(SAFE_ROOT),
+                    cwd=str(self.safe_root),
                 )
             else:
                 import asyncio as aio
@@ -537,7 +546,7 @@ class CodeExecutionTool(Tool):
                     "python3", "-c", code,
                     stdout=aio.subprocess.PIPE,
                     stderr=aio.subprocess.PIPE,
-                    cwd=str(SAFE_ROOT),
+                    cwd=str(self.safe_root),
                 )
 
             try:
@@ -638,10 +647,10 @@ class WebSearchTool(Tool):
 # ---------------------------------------------------------------------
 
 class ProjectPlanningTool(Tool):
-    """Generate project plans and task breakdowns for development projects."""
+    """Analyze existing projects or generate new project plans and task breakdowns for development projects."""
     
     def __init__(self, safe_root: Optional[Path] = None):
-        super().__init__("project_planning", "Generate project plans and task breakdowns")
+        super().__init__("project_planning", "Analyze existing projects and continue work, or generate new project plans and task breakdowns")
         self.safe_root = safe_root or SAFE_ROOT
         # Debug logging removed for cleaner output
     
@@ -652,63 +661,435 @@ class ProjectPlanningTool(Tool):
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "project_name": {"type": "string", "description": "Name of the project"},
-                    "project_description": {"type": "string", "description": "Description of what the project should do"},
+                    "action": {"type": "string", "enum": ["analyze_existing", "create_new", "continue"], "description": "Action to perform: analyze existing project, create new project, or continue existing work", "default": "analyze_existing"},
+                    "project_name": {"type": "string", "description": "Name of the project (for new projects) or path to existing project directory"},
+                    "project_description": {"type": "string", "description": "Description of what the project should do (for new projects)"},
                     "technology_stack": {"type": "string", "description": "Preferred technologies (e.g., Python, React, C++)"},
                     "complexity": {"type": "string", "enum": ["simple", "medium", "complex"], "description": "Project complexity level"},
                     "save_to_file": {"type": "boolean", "description": "Whether to save the plan to a file", "default": True},
                     "execute_plan": {"type": "boolean", "description": "Whether to automatically create the project structure", "default": True}
                 },
-                "required": ["project_name", "project_description"]
+                "required": ["action", "project_name"]
             }
         }
     
-    async def execute(self, project_name: str, project_description: str, technology_stack: str = "", 
-                     complexity: str = "medium", save_to_file: bool = True, execute_plan: bool = True, **kwargs) -> Dict[str, Any]:
+    async def execute(self, action: str = "analyze_existing", project_name: str = "", project_description: str = "", 
+                     technology_stack: str = "", complexity: str = "medium", save_to_file: bool = True, 
+                     execute_plan: bool = True, **kwargs) -> Dict[str, Any]:
         try:
-            # Generate project structure based on complexity and technology
-            plan = self._generate_project_plan(project_name, project_description, technology_stack, complexity)
-            
-            result = {
-                "success": True,
-                "project_name": project_name,
-                "plan": plan,
-                "file_saved": None,
-                "project_created": False,
-                "files_created": []
-            }
-            
-            if save_to_file:
-                # Save to project plan file in the current working directory
-                plan_filename = f"{project_name.replace(' ', '_').lower()}_plan.md"
-                
-                # Try to save in current directory first, fall back to safe_root if needed
-                try:
-                    current_dir = Path.cwd().resolve()
-                    if _is_within(self.safe_root, current_dir):
-                        plan_file = current_dir / plan_filename
-                    else:
-                        plan_file = self.safe_root / plan_filename
-                except Exception:
-                    plan_file = self.safe_root / plan_filename
-                
-                plan_file.write_text(plan, encoding="utf-8")
-                result["file_saved"] = str(plan_file)
-            
-            if execute_plan:
-                # Create the actual project structure
-                created_files = await self._execute_project_plan(project_name, technology_stack, complexity)
-                result["project_created"] = True
-                result["files_created"] = created_files
-                result["message"] = f"Project '{project_name}' created with {len(created_files)} files"
+            if action == "analyze_existing":
+                return await self._analyze_existing_project(project_name, save_to_file)
+            elif action == "continue":
+                return await self._continue_existing_project(project_name, save_to_file)
+            elif action == "create_new":
+                return await self._create_new_project(project_name, project_description, technology_stack, 
+                                                    complexity, save_to_file, execute_plan)
             else:
-                result["message"] = f"Project plan generated for '{project_name}'"
-            
-            return result
+                # Default behavior - try to analyze existing first, then create new
+                existing_analysis = await self._analyze_existing_project(project_name, False)
+                if existing_analysis["success"] and existing_analysis.get("project_found", False):
+                    return existing_analysis
+                else:
+                    return await self._create_new_project(project_name, project_description, technology_stack, 
+                                                        complexity, save_to_file, execute_plan)
                 
         except Exception as e:
             logger.exception("ProjectPlanningTool error")
             return {"success": False, "error": str(e)}
+    
+    async def _analyze_existing_project(self, project_name: str, save_to_file: bool = True) -> Dict[str, Any]:
+        """Analyze an existing project and provide continuation suggestions."""
+        try:
+            # Look for existing project directory
+            project_path = None
+            
+            # Try different approaches to find the project
+            if "/" in project_name or "\\" in project_name:
+                # Path provided
+                try:
+                    project_path = _safe_path(project_name, want_dir=True)
+                except (PermissionError, ValueError):
+                    project_path = None
+            else:
+                # Try to find project in current directory or subdirectories
+                try:
+                    search_dir = Path.cwd().resolve()
+                except Exception:
+                    search_dir = self.safe_root
+                
+                # Look for exact match
+                potential_path = search_dir / project_name.replace(' ', '_').lower()
+                if potential_path.exists() and potential_path.is_dir():
+                    project_path = potential_path
+                else:
+                    # Look for similar names
+                    for item in search_dir.iterdir():
+                        if item.is_dir() and project_name.lower().replace(' ', '_') in item.name.lower():
+                            project_path = item
+                            break
+            
+            if not project_path or not project_path.exists():
+                try:
+                    current_dir = Path.cwd().resolve()
+                    search_locations = [str(current_dir)]
+                    if current_dir != self.safe_root:
+                        search_locations.append(str(self.safe_root))
+                except Exception:
+                    search_locations = [str(self.safe_root)]
+                    
+                return {
+                    "success": True,
+                    "project_found": False,
+                    "message": f"No existing project found for '{project_name}'. Consider creating a new project.",
+                    "search_locations": search_locations
+                }
+            
+            # Analyze the existing project
+            analysis = await self._perform_project_analysis(project_path)
+            
+            # Generate continuation plan
+            continuation_plan = await self._generate_continuation_plan(project_path, analysis)
+            
+            result = {
+                "success": True,
+                "project_found": True,
+                "project_path": str(project_path),
+                "project_name": project_path.name,
+                "analysis": analysis,
+                "continuation_plan": continuation_plan,
+                "message": f"Analyzed existing project '{project_path.name}' at {project_path}"
+            }
+            
+            if save_to_file:
+                # Save continuation plan
+                plan_filename = f"{project_path.name}_continuation_plan.md"
+                plan_file = project_path / plan_filename
+                plan_file.write_text(continuation_plan, encoding="utf-8")
+                result["plan_file"] = str(plan_file)
+            
+            return result
+            
+        except Exception as e:
+            logger.exception("Project analysis error")
+            return {"success": False, "error": str(e)}
+    
+    async def _continue_existing_project(self, project_name: str, save_to_file: bool = True) -> Dict[str, Any]:
+        """Continue work on an existing project."""
+        analysis_result = await self._analyze_existing_project(project_name, False)
+        
+        if not analysis_result["success"] or not analysis_result.get("project_found", False):
+            return analysis_result
+        
+        project_path = Path(analysis_result["project_path"])
+        analysis = analysis_result["analysis"]
+        
+        # Generate specific next steps
+        next_steps = await self._generate_next_steps(project_path, analysis)
+        
+        result = {
+            "success": True,
+            "project_path": str(project_path),
+            "project_name": project_path.name,
+            "analysis": analysis,
+            "next_steps": next_steps,
+            "message": f"Ready to continue work on '{project_path.name}'"
+        }
+        
+        if save_to_file:
+            # Save next steps
+            steps_filename = f"{project_path.name}_next_steps.md"
+            steps_file = project_path / steps_filename
+            steps_file.write_text(next_steps, encoding="utf-8")
+            result["steps_file"] = str(steps_file)
+        
+        return result
+    
+    async def _create_new_project(self, project_name: str, project_description: str, technology_stack: str, 
+                                complexity: str, save_to_file: bool, execute_plan: bool) -> Dict[str, Any]:
+        """Create a new project (original functionality)."""
+        # Generate project structure based on complexity and technology
+        plan = self._generate_project_plan(project_name, project_description, technology_stack, complexity)
+        
+        result = {
+            "success": True,
+            "project_name": project_name,
+            "plan": plan,
+            "file_saved": None,
+            "project_created": False,
+            "files_created": []
+        }
+        
+        if save_to_file:
+            # Save to project plan file in the current working directory
+            plan_filename = f"{project_name.replace(' ', '_').lower()}_plan.md"
+            
+            # Always save in current working directory, not safe_root
+            try:
+                current_dir = Path.cwd().resolve()
+                plan_file = current_dir / plan_filename
+            except Exception:
+                # If we can't get current directory, use safe_root as fallback
+                plan_file = self.safe_root / plan_filename
+            
+            plan_file.write_text(plan, encoding="utf-8")
+            result["file_saved"] = str(plan_file)
+        
+        if execute_plan:
+            # Create the actual project structure
+            created_files = await self._execute_project_plan(project_name, technology_stack, complexity)
+            result["project_created"] = True
+            result["files_created"] = created_files
+            result["message"] = f"Project '{project_name}' created with {len(created_files)} files"
+        else:
+            result["message"] = f"Project plan generated for '{project_name}'"
+        
+        return result
+    
+    async def _perform_project_analysis(self, project_path: Path) -> Dict[str, Any]:
+        """Analyze an existing project's structure and contents."""
+        analysis = {
+            "project_type": "unknown",
+            "files_found": [],
+            "key_files": {},
+            "dependencies": [],
+            "structure": {},
+            "last_modified": None,
+            "size_info": {}
+        }
+        
+        try:
+            # Get basic info
+            if project_path.exists():
+                analysis["last_modified"] = project_path.stat().st_mtime
+                
+            # Analyze file structure
+            total_files = 0
+            total_size = 0
+            file_types = {}
+            
+            for item in project_path.rglob("*"):
+                if item.is_file():
+                    total_files += 1
+                    try:
+                        size = item.stat().st_size
+                        total_size += size
+                        ext = item.suffix.lower()
+                        file_types[ext] = file_types.get(ext, 0) + 1
+                    except:
+                        pass
+                    
+                    # Record first 50 files
+                    if len(analysis["files_found"]) < 50:
+                        analysis["files_found"].append(str(item.relative_to(project_path)))
+            
+            analysis["size_info"] = {
+                "total_files": total_files,
+                "total_size_bytes": total_size,
+                "file_types": file_types
+            }
+            
+            # Detect project type and key files
+            key_files = {
+                "package.json": project_path / "package.json",
+                "requirements.txt": project_path / "requirements.txt", 
+                "Cargo.toml": project_path / "Cargo.toml",
+                "Makefile": project_path / "Makefile",
+                "CMakeLists.txt": project_path / "CMakeLists.txt",
+                "setup.py": project_path / "setup.py",
+                "pyproject.toml": project_path / "pyproject.toml",
+                "README.md": project_path / "README.md",
+                "README.txt": project_path / "README.txt",
+                "main.py": project_path / "main.py",
+                "src/main.py": project_path / "src" / "main.py",
+                "main.cpp": project_path / "main.cpp",
+                "src/main.cpp": project_path / "src" / "main.cpp"
+            }
+            
+            for name, path in key_files.items():
+                if path.exists():
+                    analysis["key_files"][name] = str(path.relative_to(project_path))
+                    
+            # Determine project type
+            if "package.json" in analysis["key_files"]:
+                analysis["project_type"] = "nodejs/javascript"
+                # Try to read package.json for dependencies
+                try:
+                    import json
+                    pkg_json = json.loads((project_path / "package.json").read_text())
+                    deps = list(pkg_json.get("dependencies", {}).keys())
+                    dev_deps = list(pkg_json.get("devDependencies", {}).keys())
+                    analysis["dependencies"] = deps + dev_deps
+                except:
+                    pass
+            elif "requirements.txt" in analysis["key_files"] or "setup.py" in analysis["key_files"]:
+                analysis["project_type"] = "python"
+                # Try to read requirements
+                try:
+                    if "requirements.txt" in analysis["key_files"]:
+                        req_content = (project_path / "requirements.txt").read_text()
+                        analysis["dependencies"] = [line.strip() for line in req_content.split('\n') if line.strip() and not line.startswith('#')]
+                except:
+                    pass
+            elif "Cargo.toml" in analysis["key_files"]:
+                analysis["project_type"] = "rust"
+            elif "CMakeLists.txt" in analysis["key_files"] or "Makefile" in analysis["key_files"]:
+                analysis["project_type"] = "cpp/c"
+            
+        except Exception as e:
+            logger.warning(f"Error analyzing project {project_path}: {e}")
+        
+        return analysis
+    
+    async def _generate_continuation_plan(self, project_path: Path, analysis: Dict[str, Any]) -> str:
+        """Generate a plan for continuing work on an existing project."""
+        project_name = project_path.name
+        project_type = analysis.get("project_type", "unknown")
+        key_files = analysis.get("key_files", {})
+        
+        plan = f"""# {project_name} - Project Continuation Analysis
+
+## Project Overview
+- **Location**: {project_path}
+- **Type**: {project_type}
+- **Total Files**: {analysis.get('size_info', {}).get('total_files', 'Unknown')}
+- **Total Size**: {analysis.get('size_info', {}).get('total_size_bytes', 0)} bytes
+
+## Project Structure Analysis
+"""
+        
+        if key_files:
+            plan += "\n### Key Files Found:\n"
+            for file_name, file_path in key_files.items():
+                plan += f"- **{file_name}**: `{file_path}`\n"
+        
+        if analysis.get("dependencies"):
+            plan += f"\n### Dependencies ({len(analysis['dependencies'])}):\n"
+            for dep in analysis["dependencies"][:10]:  # Show first 10
+                plan += f"- {dep}\n"
+            if len(analysis["dependencies"]) > 10:
+                plan += f"- ... and {len(analysis['dependencies']) - 10} more\n"
+        
+        plan += f"""
+## Recommended Next Steps
+
+Based on the project analysis, here are suggested actions to continue development:
+
+### 1. Environment Setup
+"""
+        
+        if project_type == "python":
+            plan += """- Set up virtual environment: `python -m venv venv`
+- Activate environment: `source venv/bin/activate` (Linux/Mac) or `venv\\Scripts\\activate` (Windows)
+- Install dependencies: `pip install -r requirements.txt`
+"""
+        elif project_type == "nodejs/javascript":
+            plan += """- Install dependencies: `npm install`
+- Check available scripts: `npm run`
+"""
+        elif project_type == "rust":
+            plan += """- Build project: `cargo build`
+- Run tests: `cargo test`
+"""
+        elif project_type == "cpp/c":
+            plan += """- Build project: `make` or `cmake .` then `make`
+"""
+        
+        plan += """
+### 2. Code Review
+- Review recent changes and TODOs
+- Check for incomplete features or bug fixes
+- Review documentation for outdated information
+
+### 3. Testing & Quality
+- Run existing tests to ensure current state is stable
+- Check for linting or formatting issues
+- Review error logs if any
+
+### 4. Development Priorities
+Based on the project structure, consider:
+- Completing any incomplete features
+- Adding missing documentation
+- Improving test coverage
+- Optimizing performance bottlenecks
+- Adding new features as needed
+
+---
+*Analysis generated by Demonology Project Planning Tool*
+"""
+        
+        return plan
+    
+    async def _generate_next_steps(self, project_path: Path, analysis: Dict[str, Any]) -> str:
+        """Generate specific actionable next steps for continuing the project."""
+        project_name = project_path.name
+        project_type = analysis.get("project_type", "unknown")
+        
+        steps = f"""# Next Steps for {project_name}
+
+## Immediate Actions
+
+### 1. Project Setup
+"""
+        
+        if project_type == "python":
+            steps += """```bash
+cd """ + str(project_path) + """
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# OR venv\\Scripts\\activate  # Windows
+pip install -r requirements.txt
+python -m pytest  # Run tests if available
+```
+"""
+        elif project_type == "nodejs/javascript":
+            steps += """```bash
+cd """ + str(project_path) + """
+npm install
+npm test  # Run tests if available
+npm start  # Start development server
+```
+"""
+        elif project_type == "rust":
+            steps += """```bash
+cd """ + str(project_path) + """
+cargo build
+cargo test
+cargo run
+```
+"""
+        
+        steps += """
+### 2. Code Analysis
+- [ ] Read through main entry points and core modules
+- [ ] Identify any TODO comments or incomplete features
+- [ ] Check for any compilation or runtime errors
+- [ ] Review recent git history (if available)
+
+### 3. Development Focus Areas
+- [ ] Complete any unfinished features
+- [ ] Fix any identified bugs or issues  
+- [ ] Add missing error handling
+- [ ] Improve documentation where needed
+- [ ] Add or improve tests for critical functionality
+
+### 4. Quality Improvements
+- [ ] Run linting tools and fix style issues
+- [ ] Check for security vulnerabilities
+- [ ] Optimize performance if needed
+- [ ] Update dependencies if outdated
+
+## Development Workflow
+1. Make small, incremental changes
+2. Test frequently during development
+3. Commit changes regularly with clear messages
+4. Document new features or significant changes
+5. Consider adding integration tests for new functionality
+
+---
+*Generated by Demonology Project Planning Tool*
+"""
+        
+        return steps
     
     def _generate_project_plan(self, name: str, description: str, tech_stack: str, complexity: str) -> str:
         """Generate a detailed project plan."""
@@ -843,15 +1224,26 @@ Based on the technology stack, you may need:
         # Clean up project name for directory use
         clean_name = project_name.replace(' ', '_').lower()
         
-        # If project_name looks like a path, use it directly (within safe_root constraints)
-        if "/" in project_name or "\\" in project_name:
-            try:
-                project_dir = _safe_path(project_name, want_dir=True)
-            except (PermissionError, ValueError):
-                # Fall back to safe_root if path is invalid
+        # Create project in current working directory, not safe_root
+        try:
+            current_dir = Path.cwd().resolve()
+            
+            # If project_name looks like a path, use it directly
+            if "/" in project_name or "\\" in project_name:
+                # Try to interpret as relative path from current directory
+                project_dir = current_dir / project_name
+            else:
+                project_dir = current_dir / clean_name
+                
+        except Exception:
+            # If we can't get current directory, fall back to safe_root
+            if "/" in project_name or "\\" in project_name:
+                try:
+                    project_dir = _safe_path(project_name, want_dir=True)
+                except (PermissionError, ValueError):
+                    project_dir = self.safe_root / clean_name
+            else:
                 project_dir = self.safe_root / clean_name
-        else:
-            project_dir = self.safe_root / clean_name
         
         # Create project directory
         project_dir.mkdir(parents=True, exist_ok=True)
@@ -2041,12 +2433,13 @@ for data in data_iter:
 class ToolRegistry:
     def __init__(self, safe_root: Optional[Path] = None):
         self.tools: Dict[str, Tool] = {}
+        logger.info(f"ToolRegistry initializing with safe_root: {safe_root}")
         self._register_default_tools(safe_root)
 
     def _register_default_tools(self, safe_root: Optional[Path]) -> None:
         self.register_tool(FileOperationsTool(safe_root=safe_root))
         self.register_tool(CodebaseAnalysisTool(safe_root=safe_root))
-        self.register_tool(CodeExecutionTool())
+        self.register_tool(CodeExecutionTool(safe_root=safe_root))
         self.register_tool(WebSearchTool())
         self.register_tool(ProjectPlanningTool(safe_root=safe_root))
         self.register_tool(RedditSearchTool())
@@ -2105,12 +2498,13 @@ class ToolRegistry:
                 else:
                     return {"success": False, "error": "Missing required 'query' parameter"}
             elif tool_name == "project_planning":
-                if "project_name" in kwargs and "project_description" in kwargs:
+                if "action" in kwargs and "project_name" in kwargs:
+                    action = kwargs.pop("action")
                     project_name = kwargs.pop("project_name")
-                    project_description = kwargs.pop("project_description")
-                    return await tool.execute(project_name, project_description, **kwargs)
+                    project_description = kwargs.pop("project_description", "")
+                    return await tool.execute(action=action, project_name=project_name, project_description=project_description, **kwargs)
                 else:
-                    return {"success": False, "error": "Missing required 'project_name' and/or 'project_description' parameters"}
+                    return {"success": False, "error": "Missing required 'action' and/or 'project_name' parameters"}
             elif tool_name == "reddit_search":
                 if "query" in kwargs:
                     query = kwargs.pop("query")

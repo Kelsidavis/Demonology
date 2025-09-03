@@ -38,7 +38,7 @@ class DemonologyApp:
         self._auto_tool_used_this_turn = False  # guard to avoid repeated fallback in one turn
 
         safe_root = self._resolve_safe_root()
-        # Debug: safe_root resolved
+        logger.info(f"CLI resolved safe_root: {safe_root}")
         self.tool_registry = ToolRegistry(safe_root=safe_root)
 
     def _resolve_safe_root(self) -> Path:
@@ -49,23 +49,39 @@ class DemonologyApp:
         3) current working directory (where user called command)
         4) user home directory (fallback)
         """
+        logger.info(f"Resolving safe_root...")
+        
         # 1) config
         cfg = getattr(self.config.tools, "working_directory", "") or ""
+        logger.info(f"Config working_directory: {cfg}")
         if cfg:
-            return Path(cfg).expanduser().resolve()
+            resolved = Path(cfg).expanduser().resolve()
+            logger.info(f"Using config working_directory: {resolved}")
+            return resolved
+            
         # 2) env
         env_root = os.environ.get("GRIMOIRE_SAFE_ROOT", "")
+        logger.info(f"GRIMOIRE_SAFE_ROOT env var: {env_root}")
         if env_root:
-            return Path(env_root).expanduser().resolve()
+            resolved = Path(env_root).expanduser().resolve()
+            logger.info(f"Using GRIMOIRE_SAFE_ROOT: {resolved}")
+            return resolved
+            
         # 3) current working directory - prioritize where user called command
         try:
             current_dir = Path.cwd().resolve()
+            logger.info(f"Current working directory: {current_dir}")
             if current_dir.exists():
+                logger.info(f"Using current working directory: {current_dir}")
                 return current_dir
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to get current directory: {e}")
             pass
+            
         # 4) user home directory (fallback)
-        return Path.home().resolve()
+        fallback = Path.home().resolve()
+        logger.info(f"Using fallback home directory: {fallback}")
+        return fallback
 
     async def initialize(self):
         """Initialize the application."""
@@ -793,7 +809,7 @@ Config file: {cfg.config_path}
                     continue
 
                 self.conversation_history.append({"role": "user", "content": user_input})
-                self.ui.conversation.display_message("user", user_input)
+                # Note: User message display is handled by the input system
 
                 messages = self.conversation_history.copy()
                 tools = self.tool_registry.to_openai_tools_format() if self.config.tools.enabled else None
