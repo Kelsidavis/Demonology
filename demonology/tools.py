@@ -770,10 +770,27 @@ class ProjectPlanningTool(Tool):
             
             # Try different approaches to find the project
             if "/" in project_name or "\\" in project_name:
-                # Path provided
+                # Path provided - check if it's a file or directory
                 try:
-                    project_path = _safe_path(project_name, want_dir=True)
-                except (PermissionError, ValueError):
+                    input_path = Path(project_name).resolve()
+                    
+                    # If it's a file, use its parent directory
+                    if input_path.exists() and input_path.is_file():
+                        project_path = input_path.parent
+                        # If it's a plan file, try to infer the project directory name
+                        if input_path.name.endswith('_plan.md'):
+                            # Look for directory with similar name
+                            inferred_name = input_path.name.replace('_plan.md', '')
+                            inferred_dir = input_path.parent / inferred_name
+                            if inferred_dir.exists() and inferred_dir.is_dir():
+                                project_path = inferred_dir
+                    # If it's a directory, use it directly
+                    elif input_path.exists() and input_path.is_dir():
+                        project_path = input_path
+                    else:
+                        project_path = None
+                        
+                except (PermissionError, ValueError, OSError):
                     project_path = None
             else:
                 # Try to find project in current directory or subdirectories
