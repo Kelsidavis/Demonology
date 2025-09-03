@@ -423,7 +423,15 @@ class CodebaseAnalysisTool(Tool):
                 for item in sorted(d.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
                     if entries >= max_entries:
                         return
-                    out.append({"path": str(item.relative_to(self.safe_root)), "type": "directory" if item.is_dir() else "file"})
+                    # Calculate relative path from the base directory being scanned
+                    try:
+                        rel_path = str(item.relative_to(base))
+                        if not rel_path:  # If it's the base directory itself
+                            rel_path = "."
+                    except ValueError:
+                        # Fallback to absolute path if relative calculation fails
+                        rel_path = str(item)
+                    out.append({"path": rel_path, "type": "directory" if item.is_dir() else "file"})
                     entries += 1
                     if item.is_dir() and lvl < depth:
                         walk(item, lvl + 1)
@@ -431,7 +439,14 @@ class CodebaseAnalysisTool(Tool):
                 pass
 
         walk(base, 0)
-        return {"success": True, "operation": "tree", "root": str(base.relative_to(self.safe_root)), "depth": depth, "count": len(out), "nodes": out}
+        # Calculate root path for return value
+        try:
+            root_path = str(base.relative_to(self.safe_root))
+        except ValueError:
+            # If base is outside safe_root, use absolute path or current directory name
+            root_path = base.name if base.name else str(base)
+        
+        return {"success": True, "operation": "tree", "root": root_path, "depth": depth, "count": len(out), "nodes": out}
 
     def _index_repo(self, rel: str, max_files: int, include_ext: List[str], exclude_glob: List[str], max_size_bytes: int) -> Dict[str, Any]:
         base = self._safe_p(rel)
@@ -454,13 +469,24 @@ class CodebaseAnalysisTool(Tool):
                     continue
                 if size > max_size_bytes:
                     continue
-                items.append({"path": str(p.relative_to(self.safe_root)), "size": int(size), "ext": p.suffix.lower()})
+                # Calculate relative path from the base directory
+                try:
+                    rel_path = str(p.relative_to(base))
+                except ValueError:
+                    rel_path = str(p)
+                items.append({"path": rel_path, "size": int(size), "ext": p.suffix.lower()})
                 count += 1
                 if count >= max_files:
                     break
             if count >= max_files:
                 break
-        return {"success": True, "operation": "index_repo", "root": str(base.relative_to(self.safe_root)), "count": len(items), "files": items}
+        # Calculate root path for return value
+        try:
+            root_path = str(base.relative_to(self.safe_root))
+        except ValueError:
+            root_path = base.name if base.name else str(base)
+        
+        return {"success": True, "operation": "index_repo", "root": root_path, "count": len(items), "files": items}
 
     def _read_chunk(self, rel: Optional[str], offset: int, limit: int) -> Dict[str, Any]:
         if not rel:
@@ -513,13 +539,28 @@ class CodebaseAnalysisTool(Tool):
                                 line = raw.decode("latin-1")
                             found = bool(pattern.search(line)) if pattern else (query.lower() in line.lower())
                             if found:
-                                hits.append({"path": str(p.relative_to(self.safe_root)), "line": i, "preview": line.rstrip()[:300]})
+                                # Calculate relative path from base directory
+                                try:
+                                    rel_path = str(p.relative_to(base))
+                                except ValueError:
+                                    rel_path = str(p)
+                                hits.append({"path": rel_path, "line": i, "preview": line.rstrip()[:300]})
                                 total += 1
                                 if total >= max_matches:
-                                    return {"success": True, "operation": "grep", "root": str(base.relative_to(self.safe_root)), "count": len(hits), "results": hits}
+                                    try:
+                                        root_path = str(base.relative_to(self.safe_root))
+                                    except ValueError:
+                                        root_path = base.name if base.name else str(base)
+                                    return {"success": True, "operation": "grep", "root": root_path, "count": len(hits), "results": hits}
                 except OSError:
                     continue
-        return {"success": True, "operation": "grep", "root": str(base.relative_to(self.safe_root)), "count": len(hits), "results": hits}
+        # Calculate root path for return value
+        try:
+            root_path = str(base.relative_to(self.safe_root))
+        except ValueError:
+            root_path = base.name if base.name else str(base)
+        
+        return {"success": True, "operation": "grep", "root": root_path, "count": len(hits), "results": hits}
 
 
 
