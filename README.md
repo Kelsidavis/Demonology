@@ -376,10 +376,6 @@ We welcome contributions to the Demonology project! Please see our contributing 
 - 🔧 Pull requests
 - 📚 Documentation improvements
 
-## 📜 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
 ## 🙏 Acknowledgments
 
 - **llama.cpp** team for the incredible local LLM inference
@@ -424,3 +420,13 @@ ls -la ~/.config/demonology/
 *\"Through terminal and daemon, through code and incantation, may your queries be answered and your knowledge expanded.\"* ⛧⛤
 
 **Happy conjuring with Demonology CLI!** 🔮✨
+
+
+## 📜 License
+
+Copyright (c) 2025 Kelsi Davis
+
+Permission is granted to use, copy, modify, and distribute this software 
+for personal, educational, or research purposes only. Commercial use, 
+including selling, offering paid services, or integrating into 
+commercial products, requires prior written permission from the author.
