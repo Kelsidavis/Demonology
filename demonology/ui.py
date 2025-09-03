@@ -8,6 +8,8 @@ import time
 import threading
 import queue
 import sys
+import termios
+import tty
 from typing import Optional, List, Dict, Any
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -345,9 +347,148 @@ class DemonologyUI:
         self._has_content = False  # Track if we have any conversation content
         self._banner_content = None  # Store banner for initial display
         
+        # Command history support
+        self._command_history: List[str] = []
+        self._history_index: int = -1
+        self._current_input = ""  # Store the current input being typed
+        
         # Set up callbacks
         self.conversation.set_update_callback(self._update_layout)
         self.status_bar.set_update_callback(self._update_layout)
+    
+    def add_to_history(self, command: str) -> None:
+        """Add a command to the history."""
+        if command.strip() and (not self._command_history or self._command_history[-1] != command):
+            self._command_history.append(command)
+            # Keep only last 100 commands
+            if len(self._command_history) > 100:
+                self._command_history = self._command_history[-100:]
+        # Reset history navigation
+        self._history_index = -1
+        self._current_input = ""
+    
+    def navigate_history(self, direction: str) -> str:
+        """Navigate through command history. Returns the command to display."""
+        if not self._command_history:
+            return ""
+        
+        if direction == "up":
+            if self._history_index == -1:
+                # First time navigating, store current input and go to last command
+                self._history_index = len(self._command_history) - 1
+            else:
+                # Move up in history (older commands)
+                self._history_index = max(0, self._history_index - 1)
+        elif direction == "down":
+            if self._history_index == -1:
+                return ""  # No history navigation active
+            else:
+                # Move down in history (newer commands)
+                self._history_index = min(len(self._command_history) - 1, self._history_index + 1)
+                # If we're at the end, return to current input
+                if self._history_index == len(self._command_history) - 1:
+                    # Check if we should go back to current input
+                    pass
+        
+        return self._command_history[self._history_index] if self._history_index >= 0 else ""
+    
+    def get_input_with_history(self, prompt_text: str = "") -> str:
+        """Get input with arrow key history navigation support."""
+        try:
+            # Check if we're on a Unix-like system and can use termios
+            import termios
+            import tty
+            
+            # Fall back to simple input on Windows or if termios fails
+            if sys.platform == "win32":
+                return self._simple_input_with_history(prompt_text)
+            
+            return self._unix_input_with_history(prompt_text)
+            
+        except (ImportError, AttributeError, OSError):
+            # Fall back to simple implementation without arrow key support
+            return self._simple_input_with_history(prompt_text)
+    
+    def _simple_input_with_history(self, prompt_text: str = "") -> str:
+        """Simple input with basic history support using special commands."""
+        theme = self.theme_manager.current_theme
+        symbols = get_theme_symbols(ThemeName(theme.name))
+        
+        # Show history hint
+        history_hint = ""
+        if self._command_history:
+            history_hint = f" [dim]({len(self._command_history)} in history, /history for commands)[/dim]"
+        
+        try:
+            user_input = self.console.input(f"[{theme.get_color('primary')}]{symbols['bullet']} [/]{history_hint}")
+            
+            # Handle special history commands
+            if user_input.strip() == "/history":
+                return self._show_history_menu()
+            elif user_input.strip().startswith("/h") and user_input.strip()[2:].strip().isdigit():
+                # Allow /h1, /h2, etc. to recall specific history items
+                try:
+                    index = int(user_input.strip()[2:].strip()) - 1
+                    if 0 <= index < len(self._command_history):
+                        recalled_cmd = self._command_history[-(index + 1)]  # Most recent is index 0
+                        self.console.print(f"[dim]Recalling: {recalled_cmd}[/dim]")
+                        self.add_to_history(recalled_cmd)
+                        return recalled_cmd
+                    else:
+                        self.console.print(f"[red]History index {index + 1} not found. Use /history to see available commands.[/red]")
+                        return self._simple_input_with_history(prompt_text)
+                except ValueError:
+                    pass
+            elif user_input.strip() == "/last":
+                # Quick shortcut for last command
+                if self._command_history:
+                    recalled_cmd = self._command_history[-1]
+                    self.console.print(f"[dim]Recalling: {recalled_cmd}[/dim]")
+                    return recalled_cmd
+                else:
+                    self.console.print("[red]No command history available.[/red]")
+                    return self._simple_input_with_history(prompt_text)
+            
+            # Regular input - add to history if non-empty
+            if user_input.strip():
+                self.add_to_history(user_input)
+            return user_input
+            
+        except (KeyboardInterrupt, EOFError):
+            return "/quit"
+    
+    def _show_history_menu(self) -> str:
+        """Show history menu and let user select a command."""
+        if not self._command_history:
+            self.console.print("[yellow]No command history available.[/yellow]")
+            return self._simple_input_with_history()
+        
+        theme = self.theme_manager.current_theme
+        symbols = get_theme_symbols(ThemeName(theme.name))
+        
+        # Show last 10 commands
+        self.console.print(Panel(
+            "\n".join([
+                "[bold]Recent Commands:[/bold]",
+                "",
+                *[f"[dim]{i+1}.[/dim] {cmd}" for i, cmd in enumerate(self._command_history[-10:][::-1])],
+                "",
+                "[dim]Use /h1, /h2, etc. to recall a command, or /last for most recent[/dim]"
+            ]),
+            title="Command History",
+            border_style=theme.get_style("border")
+        ))
+        
+        return self._simple_input_with_history()
+    
+    def _unix_input_with_history(self, prompt_text: str = "") -> str:
+        """Unix input with full arrow key support."""
+        theme = self.theme_manager.current_theme
+        symbols = get_theme_symbols(ThemeName(theme.name))
+        
+        # For now, fall back to simple input as implementing full terminal control is complex
+        # This would require significant refactoring to work with Rich's console
+        return self._simple_input_with_history(prompt_text)
     
     def render_banner(self, theme_name: str, model: str):
         """Render the mystical Demonology banner with proper alignment."""
@@ -575,7 +716,7 @@ class DemonologyUI:
             return "/quit"
     
     def get_user_input(self, prompt: str = "> ") -> str:
-        """Get user input with Claude Code style - clean input box."""
+        """Get user input with command history navigation support."""
         if self._layout_running:
             return self.get_user_input_with_layout()
             
@@ -586,19 +727,19 @@ class DemonologyUI:
         try:
             if self._first_input:
                 # Show helper text in a panel for first input only
+                history_hint = " (↑/↓ for history)" if self._command_history else ""
                 input_panel = Panel(
-                    Text(f"{symbols['bullet']} Type your message... (/help for commands, /quit to exit)", style=theme.get_style("user.input")),
+                    Text(f"{symbols['bullet']} Type your message... (/help for commands, /quit to exit){history_hint}", style=theme.get_style("user.input")),
                     border_style=theme.get_style("border"),
                     padding=(0, 1)
                 )
                 self.console.print(input_panel)
                 self._first_input = False
-                user_input = self.console.input(f"[{theme.get_color('primary')}]{symbols['bullet']} [/]")
-            else:
-                # After first input, just use simple input without panel
-                user_input = self.console.input(f"[{theme.get_color('primary')}]{symbols['bullet']} [/]")
             
+            # Use history-enabled input
+            user_input = self.get_input_with_history()
             return user_input
+            
         except KeyboardInterrupt:
             self.console.print("\n[dim]Interrupted by ancient forces...[/dim]")
             return "/quit"

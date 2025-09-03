@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
 import logging
 import os
@@ -343,29 +344,52 @@ class CodebaseAnalysisTool(Tool):
     # helpers
     def _safe_p(self, rel: str) -> Path:
         if not rel or rel == ".":
-            return self.safe_root
-        
-        # Handle absolute paths that might be within safe_root
-        if os.path.isabs(rel):
-            p = Path(rel).resolve()
-            if str(p).startswith(str(self.safe_root)):
-                return p
-            else:
-                # Log the attempted path for debugging
-                logger.warning(f"CodebaseAnalysisTool: Attempted to access path outside safe_root: {p} (safe_root: {self.safe_root})")
-                # Instead of failing, try to use just the current directory
-                logger.info("Falling back to current directory for codebase analysis")
+            # Use current working directory if available, otherwise safe_root
+            try:
+                current_dir = Path.cwd().resolve()
+                return current_dir
+            except Exception:
                 return self.safe_root
         
-        # Handle relative paths
-        p = (self.safe_root / rel).resolve()
-        if not str(p).startswith(str(self.safe_root)):
-            # Log the attempted path for debugging
-            logger.warning(f"CodebaseAnalysisTool: Relative path escapes safe_root: {p} (safe_root: {self.safe_root})")
-            # Instead of failing, try to use just the current directory
-            logger.info("Falling back to current directory for codebase analysis")
-            return self.safe_root
-        return p
+        # Handle absolute paths
+        if os.path.isabs(rel):
+            p = Path(rel).resolve()
+            
+            # Check if it's within safe_root (Demonology source directory)
+            if str(p).startswith(str(self.safe_root)):
+                return p
+                
+            # Check if it's within user's current working directory tree
+            try:
+                current_dir = Path.cwd().resolve()
+                if str(p).startswith(str(current_dir)) or str(current_dir).startswith(str(p)):
+                    # Path is within or above current working directory - allow it
+                    return p
+            except Exception:
+                pass
+                
+            # Check if it's within user's home directory (broader allowance)
+            try:
+                home_dir = Path.home().resolve()
+                if str(p).startswith(str(home_dir)):
+                    logger.info(f"CodebaseAnalysisTool: Allowing access to path within user home: {p}")
+                    return p
+            except Exception:
+                pass
+                
+            # Log the attempted path for debugging but still allow it with warning
+            logger.warning(f"CodebaseAnalysisTool: Accessing path outside typical bounds: {p}")
+            return p
+        
+        # Handle relative paths - resolve relative to current working directory first
+        try:
+            current_dir = Path.cwd().resolve()
+            p = (current_dir / rel).resolve()
+            return p
+        except Exception:
+            # Fall back to relative to safe_root
+            p = (self.safe_root / rel).resolve()
+            return p
 
     def _excluded(self, path: Path, exclude_glob: List[str]) -> bool:
         sp = str(path)

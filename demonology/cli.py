@@ -192,6 +192,11 @@ class DemonologyApp:
 /debug                Debug API response
 /tools                List available tools
 
+[bold]Command History:[/bold]
+/history              Show recent command history
+/last                 Recall and resend last command
+/h<number>            Recall specific command (e.g., /h1, /h2)
+
 [dim]Type your message to chat with the mystical AI.[/dim]
 """)
         self.ui.console.print()
