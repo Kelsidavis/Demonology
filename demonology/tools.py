@@ -230,6 +230,229 @@ class FileOperationsTool(Tool):
         d.rmdir()
         return {"success": True, "operation": "delete_directory", "path": str(d), "recursive": False, "deleted": True}
 
+# ---------------------------------------------------------------------
+# Codebase Analysis Tool
+# ---------------------------------------------------------------------
+
+class CodebaseAnalysisTool(Tool):
+    """
+    Explore/search codebases (SAFE_ROOT-fenced).
+
+    Ops:
+      - tree(path='.', depth=2, max_entries=200)
+      - index_repo(path='.', max_files=2000, include_ext=[...], exclude_glob=[...], max_size_bytes=1_000_000)
+      - read_chunk(path, offset=0, limit=65536)
+      - grep(path='.', query, regex=False, include_ext=[...], exclude_glob=[...], max_matches=200)
+    """
+    DEFAULT_EXCLUDES = [
+        "*/.git/*", "*/.hg/*", "*/.svn/*", "*/.idea/*", "*/.vscode/*",
+        "*/node_modules/*", "*/venv/*", "*/.venv/*", "*/dist/*", "*/build/*",
+        "*/__pycache__/*"
+    ]
+    DEFAULT_INCLUDE_EXT = [
+        ".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".toml", ".yaml", ".yml",
+        ".md", ".txt", ".css", ".html", ".sh"
+    ]
+
+    def __init__(self, safe_root: Optional[Path] = None):
+        super().__init__("codebase_analysis", "Explore and search codebases safely.")
+        self.safe_root: Path = (safe_root or SAFE_ROOT).resolve()
+
+    def to_openai_function(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "operation": {"type": "string", "enum": ["tree", "index_repo", "read_chunk", "grep"]},
+                    "path": {"type": "string"},
+                    "depth": {"type": "integer"},
+                    "max_entries": {"type": "integer"},
+                    "max_files": {"type": "integer"},
+                    "include_ext": {"type": "array", "items": {"type": "string"}},
+                    "exclude_glob": {"type": "array", "items": {"type": "string"}},
+                    "max_size_bytes": {"type": "integer"},
+                    "offset": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                    "query": {"type": "string"},
+                    "regex": {"type": "boolean"},
+                    "max_matches": {"type": "integer"},
+                },
+                "required": ["operation"],
+            },
+        }
+
+    def is_available(self) -> bool:
+        return True
+
+    async def execute(self, operation: str, **kw) -> Dict[str, Any]:
+        try:
+            op = (operation or "").lower()
+            if op == "tree":
+                return self._tree(kw.get("path") or ".", int(kw.get("depth") or 2), int(kw.get("max_entries") or 200))
+            if op == "index_repo":
+                return self._index_repo(
+                    kw.get("path") or ".",
+                    int(kw.get("max_files") or 2000),
+                    kw.get("include_ext") or self.DEFAULT_INCLUDE_EXT,
+                    kw.get("exclude_glob") or self.DEFAULT_EXCLUDES,
+                    int(kw.get("max_size_bytes") or 1_000_000),
+                )
+            if op == "read_chunk":
+                return self._read_chunk(kw.get("path"), int(kw.get("offset") or 0), int(kw.get("limit") or 65536))
+            if op == "grep":
+                return self._grep(
+                    kw.get("path") or ".",
+                    str(kw.get("query") or ""),
+                    bool(kw.get("regex") or False),
+                    kw.get("include_ext") or self.DEFAULT_INCLUDE_EXT,
+                    kw.get("exclude_glob") or self.DEFAULT_EXCLUDES,
+                    int(kw.get("max_matches") or 200),
+                )
+            return {"success": False, "error": f"Unknown operation: {operation}"}
+        except Exception as e:
+            logger.exception("CodebaseAnalysisTool error")
+            return {"success": False, "error": str(e)}
+
+    # helpers
+    def _safe_p(self, rel: str) -> Path:
+        p = (self.safe_root / (rel or ".")).resolve()
+        if not str(p).startswith(str(self.safe_root)):
+            raise PermissionError("Path escapes SAFE_ROOT.")
+        return p
+
+    def _excluded(self, path: Path, exclude_glob: List[str]) -> bool:
+        sp = str(path)
+        return any(fnmatch.fnmatch(sp, pat) for pat in (exclude_glob or []))
+
+    def _want_ext(self, path: Path, include_ext: List[str]) -> bool:
+        return (path.suffix or "").lower() in {e.lower() for e in (include_ext or [])}
+
+    def _looks_binary(self, data: bytes) -> bool:
+        if not data:
+            return False
+        text_chars = bytearray({7,8,9,10,12,13,27} | set(range(0x20, 0x100)) - {0x7f})
+        nontext = data.translate(None, text_chars)
+        return float(len(nontext)) / float(len(data)) > 0.30
+
+    # ops
+    def _tree(self, rel: str, depth: int, max_entries: int) -> Dict[str, Any]:
+        base = self._safe_p(rel)
+        if not base.exists():
+            raise FileNotFoundError("Base path does not exist.")
+        if not base.is_dir():
+            raise NotADirectoryError("Path is not a directory.")
+        out: List[Dict[str, Any]] = []
+        entries = 0
+
+        def walk(d: Path, lvl: int):
+            nonlocal entries
+            if entries >= max_entries:
+                return
+            try:
+                for item in sorted(d.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+                    if entries >= max_entries:
+                        return
+                    out.append({"path": str(item.relative_to(self.safe_root)), "type": "directory" if item.is_dir() else "file"})
+                    entries += 1
+                    if item.is_dir() and lvl < depth:
+                        walk(item, lvl + 1)
+            except PermissionError:
+                pass
+
+        walk(base, 0)
+        return {"success": True, "operation": "tree", "root": str(base.relative_to(self.safe_root)), "depth": depth, "count": len(out), "nodes": out}
+
+    def _index_repo(self, rel: str, max_files: int, include_ext: List[str], exclude_glob: List[str], max_size_bytes: int) -> Dict[str, Any]:
+        base = self._safe_p(rel)
+        if not base.exists() or not base.is_dir():
+            raise NotADirectoryError("Path is not a directory.")
+        items: List[Dict[str, Any]] = []
+        count = 0
+        for root, dirs, files in os.walk(base):
+            root_p = Path(root)
+            dirs[:] = [d for d in dirs if not self._excluded(root_p / d, exclude_glob)]
+            for f in files:
+                p = root_p / f
+                if self._excluded(p, exclude_glob):
+                    continue
+                if not self._want_ext(p, include_ext):
+                    continue
+                try:
+                    size = p.stat().st_size
+                except OSError:
+                    continue
+                if size > max_size_bytes:
+                    continue
+                items.append({"path": str(p.relative_to(self.safe_root)), "size": int(size), "ext": p.suffix.lower()})
+                count += 1
+                if count >= max_files:
+                    break
+            if count >= max_files:
+                break
+        return {"success": True, "operation": "index_repo", "root": str(base.relative_to(self.safe_root)), "count": len(items), "files": items}
+
+    def _read_chunk(self, rel: Optional[str], offset: int, limit: int) -> Dict[str, Any]:
+        if not rel:
+            raise ValueError("path is required for read_chunk")
+        p = self._safe_p(rel)
+        if not p.exists() or not p.is_file():
+            raise FileNotFoundError("Path is not a file.")
+        data = p.read_bytes()
+        if self._looks_binary(data[:4096]):
+            return {"success": False, "operation": "read_chunk", "error": "Likely binary file; refusing to return raw bytes.", "path": str(p)}
+        start = max(0, int(offset))
+        end = max(start, start + max(1, int(limit)))
+        slice_bytes = data[start:end]
+        try:
+            text = slice_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            text = slice_bytes.decode("latin-1")
+        eof = end >= len(data)
+        return {"success": True, "operation": "read_chunk", "path": str(p), "offset": start, "limit": end - start, "eof": eof, "content": text}
+
+    def _grep(self, rel: str, query: str, regex: bool, include_ext: List[str], exclude_glob: List[str], max_matches: int) -> Dict[str, Any]:
+        if not query:
+            raise ValueError("query is required for grep")
+        base = self._safe_p(rel)
+        if not base.exists() or not base.is_dir():
+            raise NotADirectoryError("Path is not a directory.")
+        hits: List[Dict[str, Any]] = []
+        total = 0
+        pattern = re.compile(query, re.IGNORECASE) if regex else None
+
+        for root, dirs, files in os.walk(base):
+            root_p = Path(root)
+            dirs[:] = [d for d in dirs if not self._excluded(root_p / d, exclude_glob)]
+            for f in files:
+                p = root_p / f
+                if self._excluded(p, exclude_glob):
+                    continue
+                if not self._want_ext(p, include_ext):
+                    continue
+                try:
+                    with p.open("rb") as fh:
+                        sample = fh.read(4096)
+                        if self._looks_binary(sample):
+                            continue
+                        fh.seek(0)
+                        for i, raw in enumerate(fh, start=1):
+                            try:
+                                line = raw.decode("utf-8")
+                            except UnicodeDecodeError:
+                                line = raw.decode("latin-1")
+                            found = bool(pattern.search(line)) if pattern else (query.lower() in line.lower())
+                            if found:
+                                hits.append({"path": str(p.relative_to(self.safe_root)), "line": i, "preview": line.rstrip()[:300]})
+                                total += 1
+                                if total >= max_matches:
+                                    return {"success": True, "operation": "grep", "root": str(base.relative_to(self.safe_root)), "count": len(hits), "results": hits}
+                except OSError:
+                    continue
+        return {"success": True, "operation": "grep", "root": str(base.relative_to(self.safe_root)), "count": len(hits), "results": hits}
+
+
 
 # ---------------------------------------------------------------------
 # Code Execution Tool (minimal, guarded)
@@ -1394,6 +1617,7 @@ class ToolRegistry:
 
     def _register_default_tools(self, safe_root: Optional[Path]) -> None:
         self.register_tool(FileOperationsTool(safe_root=safe_root))
+        self.register_tool(CodebaseAnalysisTool(safe_root=safe_root))
         self.register_tool(CodeExecutionTool())
         self.register_tool(WebSearchTool())
         self.register_tool(ProjectPlanningTool(safe_root=safe_root))
