@@ -1,0 +1,18 @@
+# Demonology CLI Dependencies
+# Core dependencies for running Demonology
+
+# HTTP client for web requests and API calls
+httpx>=0.25.0
+requests>=2.28.0
+
+# Terminal UI and styling
+rich>=13.0.0
+
+# CLI framework
+click>=8.0.0
+
+# Configuration file support
+pyyaml>=6.0.0
+
+# Optional: Reddit API wrapper (for enhanced Reddit search with credentials)
+# praw>=7.6.0

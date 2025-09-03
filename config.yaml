@@ -1,0 +1,33 @@
+# Demonology Configuration File
+# Edit this file to customize your mystical CLI experience
+
+api:
+  base_url: "http://127.0.0.1:8080/v1"
+  model: "Qwen-3-Coder-30B"
+  max_tokens: 1024
+  temperature: 0.7
+  top_p: 0.95
+  timeout: 60.0
+
+ui:
+  theme: "amethyst"  # Options: amethyst, infernal, stygian
+  permissive_mode: true
+  auto_save_conversations: true
+  max_history_length: 1000
+
+tools:
+  enabled: true
+  allowed_tools:
+    - "file_operations"     # File system operations
+    - "code_execution"      # Run code snippets (Python, JS, Bash)
+    - "web_search"          # Search the web for information
+    - "reddit_search"       # Search Reddit discussions
+    - "project_planning"    # Generate and execute project plans
+    - "image_generation"    # Generate AI images for textures, icons, assets
+  working_directory: null  # null means use current directory
+
+# Optional: Reddit API configuration for enhanced search
+# Set these environment variables for authenticated Reddit access:
+# REDDIT_CLIENT_ID=your_client_id
+# REDDIT_CLIENT_SECRET=your_client_secret  
+# REDDIT_USER_AGENT=your_app_name

@@ -1,0 +1,25 @@
+# Development dependencies for Demonology CLI
+-r requirements.txt
+
+# Testing
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-mock>=3.10.0
+
+# Code quality
+black>=22.0.0
+flake8>=5.0.0
+mypy>=1.0.0
+isort>=5.10.0
+
+# HTTP testing
+httpx[test]>=0.25.0
+responses>=0.22.0
+
+# Optional dependencies for testing
+praw>=7.6.0
+
+# Additional development tools
+pre-commit>=2.20.0
+twine>=4.0.0
+build>=0.8.0
