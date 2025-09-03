@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -2017,8 +2018,14 @@ class ImageGenerationTool(Tool):
             }
             
             if save_image:
-                # Save image to safe directory
-                image_path = self.safe_root / filename
+                # Save image to current working directory
+                try:
+                    # Use current working directory instead of safe_root
+                    current_dir = Path.cwd().resolve()
+                    image_path = current_dir / filename
+                except Exception:
+                    # Fallback to safe_root if current directory fails
+                    image_path = self.safe_root / filename
                 
                 if isinstance(image_data, bytes):
                     # Direct binary data
@@ -2198,6 +2205,393 @@ class ImageGenerationTool(Tool):
         except Exception as e:
             logger.warning(f"Craiyon API failed: {e}")
             return None
+
+
+# ---------------------------------------------------------------------
+# Image Analysis Tool
+# ---------------------------------------------------------------------
+
+class ImageAnalysisTool(Tool):
+    """Analyze images including screenshots, diagrams, code snippets, and UI mockups."""
+    
+    def __init__(self, safe_root: Optional[Path] = None):
+        super().__init__("image_analysis", "Analyze and describe images including screenshots, diagrams, UI mockups, and visual content")
+        self.safe_root = safe_root or SAFE_ROOT
+    
+    def is_available(self) -> bool:
+        """Check if required image processing libraries are available."""
+        try:
+            from PIL import Image
+            return True
+        except ImportError:
+            return False
+    
+    def to_openai_function(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "image_path": {
+                        "type": "string",
+                        "description": "Path to the image file to analyze"
+                    },
+                    "analysis_type": {
+                        "type": "string",
+                        "enum": ["general", "ui_mockup", "code_snippet", "diagram", "screenshot", "text_extraction"],
+                        "description": "Type of analysis to perform",
+                        "default": "general"
+                    },
+                    "extract_text": {
+                        "type": "boolean",
+                        "description": "Whether to attempt OCR text extraction",
+                        "default": True
+                    },
+                    "save_analysis": {
+                        "type": "boolean", 
+                        "description": "Whether to save analysis results to a text file",
+                        "default": True
+                    }
+                },
+                "required": ["image_path"]
+            }
+        }
+    
+    async def execute(self, image_path: str, analysis_type: str = "general", 
+                     extract_text: bool = True, save_analysis: bool = True, **kwargs) -> Dict[str, Any]:
+        try:
+            # Resolve and validate image path
+            img_path = Path(image_path).resolve()
+            
+            # Check if path exists
+            if not img_path.exists():
+                return {"success": False, "error": f"Image file not found: {image_path}"}
+            
+            if not img_path.is_file():
+                return {"success": False, "error": f"Path is not a file: {image_path}"}
+            
+            # Check if it's an image file
+            valid_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp', '.ico'}
+            if img_path.suffix.lower() not in valid_extensions:
+                return {"success": False, "error": f"Unsupported image format: {img_path.suffix}"}
+            
+            # Perform image analysis
+            analysis_result = await self._analyze_image(img_path, analysis_type, extract_text)
+            
+            result = {
+                "success": True,
+                "image_path": str(img_path),
+                "image_name": img_path.name,
+                "analysis_type": analysis_type,
+                "analysis": analysis_result
+            }
+            
+            if save_analysis:
+                # Save analysis to text file
+                analysis_file = img_path.with_suffix('.analysis.txt')
+                analysis_content = self._format_analysis_report(analysis_result, img_path.name, analysis_type)
+                analysis_file.write_text(analysis_content, encoding='utf-8')
+                result["analysis_file"] = str(analysis_file)
+            
+            return result
+            
+        except Exception as e:
+            logger.exception("ImageAnalysisTool error")
+            return {"success": False, "error": f"Image analysis failed: {str(e)}"}
+    
+    async def _analyze_image(self, img_path: Path, analysis_type: str, extract_text: bool) -> Dict[str, Any]:
+        """Perform comprehensive image analysis."""
+        analysis = {
+            "basic_info": {},
+            "visual_description": "",
+            "extracted_text": "",
+            "technical_details": {},
+            "suggestions": []
+        }
+        
+        try:
+            from PIL import Image
+            
+            # Open and analyze image
+            with Image.open(img_path) as img:
+                # Basic image information
+                analysis["basic_info"] = {
+                    "dimensions": f"{img.width}x{img.height}",
+                    "format": img.format,
+                    "mode": img.mode,
+                    "file_size": img_path.stat().st_size,
+                    "has_transparency": img.mode in ('RGBA', 'LA') or 'transparency' in img.info
+                }
+                
+                # Convert to RGB for analysis if needed
+                if img.mode != 'RGB':
+                    img_rgb = img.convert('RGB')
+                else:
+                    img_rgb = img
+                
+                # Analyze image characteristics
+                analysis["technical_details"] = self._analyze_image_characteristics(img_rgb)
+                
+                # Generate visual description based on analysis type
+                analysis["visual_description"] = self._generate_visual_description(img_rgb, analysis_type)
+                
+                # Extract text if requested
+                if extract_text:
+                    analysis["extracted_text"] = self._extract_text_from_image(img_rgb)
+                
+                # Generate suggestions based on analysis type
+                analysis["suggestions"] = self._generate_suggestions(analysis_type, analysis)
+        
+        except ImportError:
+            analysis["error"] = "PIL (Pillow) library not available for image analysis"
+        except Exception as e:
+            analysis["error"] = f"Image analysis failed: {str(e)}"
+        
+        return analysis
+    
+    def _analyze_image_characteristics(self, img: 'Image.Image') -> Dict[str, Any]:
+        """Analyze technical characteristics of the image."""
+        import statistics
+        
+        characteristics = {}
+        
+        try:
+            # Color analysis
+            colors = img.getcolors(maxcolors=256*256*256)
+            if colors:
+                # Dominant colors
+                dominant_colors = sorted(colors, key=lambda x: x[0], reverse=True)[:5]
+                characteristics["dominant_colors"] = [
+                    {"rgb": color[1], "count": color[0]} for color in dominant_colors
+                ]
+            
+            # Brightness analysis
+            grayscale = img.convert('L')
+            pixels = list(grayscale.getdata())
+            characteristics["brightness"] = {
+                "average": statistics.mean(pixels),
+                "median": statistics.median(pixels),
+                "min": min(pixels),
+                "max": max(pixels)
+            }
+            
+            # Detect if image appears to be a screenshot
+            characteristics["likely_screenshot"] = self._detect_screenshot_characteristics(img)
+            
+            # Detect if image contains UI elements
+            characteristics["likely_ui"] = self._detect_ui_characteristics(img)
+            
+        except Exception as e:
+            characteristics["analysis_error"] = str(e)
+        
+        return characteristics
+    
+    def _detect_screenshot_characteristics(self, img: 'Image.Image') -> Dict[str, Any]:
+        """Detect characteristics that suggest this is a screenshot."""
+        screenshot_indicators = {
+            "has_typical_screenshot_ratio": False,
+            "has_ui_like_regions": False,
+            "has_text_regions": False,
+            "confidence": "low"
+        }
+        
+        width, height = img.size
+        ratio = width / height
+        
+        # Common screenshot ratios
+        common_ratios = [16/9, 16/10, 4/3, 3/2, 21/9]
+        screenshot_indicators["has_typical_screenshot_ratio"] = any(
+            abs(ratio - r) < 0.1 for r in common_ratios
+        )
+        
+        # Look for rectangular regions (potential UI elements)
+        # This is a simplified heuristic
+        if width > 800 and height > 600:
+            screenshot_indicators["has_ui_like_regions"] = True
+        
+        # Estimate confidence
+        score = 0
+        if screenshot_indicators["has_typical_screenshot_ratio"]:
+            score += 1
+        if screenshot_indicators["has_ui_like_regions"]:
+            score += 1
+        
+        if score >= 2:
+            screenshot_indicators["confidence"] = "high"
+        elif score == 1:
+            screenshot_indicators["confidence"] = "medium"
+        
+        return screenshot_indicators
+    
+    def _detect_ui_characteristics(self, img: 'Image.Image') -> Dict[str, Any]:
+        """Detect characteristics that suggest this contains UI elements."""
+        ui_indicators = {
+            "has_rectangular_regions": False,
+            "has_button_like_elements": False,
+            "has_form_elements": False,
+            "confidence": "low"
+        }
+        
+        width, height = img.size
+        
+        # Simple heuristics for UI detection
+        # Look for common UI dimensions and aspect ratios
+        if width > 300 and height > 200:
+            ui_indicators["has_rectangular_regions"] = True
+        
+        # More sophisticated UI detection would require edge detection
+        # For now, use basic heuristics
+        ui_indicators["confidence"] = "medium" if ui_indicators["has_rectangular_regions"] else "low"
+        
+        return ui_indicators
+    
+    def _generate_visual_description(self, img: 'Image.Image', analysis_type: str) -> str:
+        """Generate a visual description based on the analysis type."""
+        width, height = img.size
+        
+        descriptions = {
+            "general": f"Image with dimensions {width}x{height} pixels. ",
+            "ui_mockup": f"UI mockup or interface design with dimensions {width}x{height}. ",
+            "code_snippet": f"Image containing code or text content, {width}x{height} pixels. ",
+            "diagram": f"Diagram or schematic image, {width}x{height} pixels. ",
+            "screenshot": f"Screenshot capture with dimensions {width}x{height}. ",
+            "text_extraction": f"Text-containing image, {width}x{height} pixels. "
+        }
+        
+        base_description = descriptions.get(analysis_type, descriptions["general"])
+        
+        # Add more details based on image characteristics
+        if width > 1920:
+            base_description += "High resolution image. "
+        elif width < 500:
+            base_description += "Small or thumbnail-sized image. "
+        
+        aspect_ratio = width / height
+        if aspect_ratio > 2:
+            base_description += "Wide aspect ratio, possibly a banner or header. "
+        elif aspect_ratio < 0.5:
+            base_description += "Tall aspect ratio, possibly a mobile screen or sidebar. "
+        
+        return base_description
+    
+    def _extract_text_from_image(self, img: 'Image.Image') -> str:
+        """Extract text from image using OCR if available."""
+        try:
+            import pytesseract
+            
+            # Extract text using Tesseract OCR
+            extracted_text = pytesseract.image_to_string(img)
+            return extracted_text.strip()
+            
+        except ImportError:
+            return "OCR not available (pytesseract not installed)"
+        except Exception as e:
+            return f"OCR failed: {str(e)}"
+    
+    def _generate_suggestions(self, analysis_type: str, analysis: Dict[str, Any]) -> List[str]:
+        """Generate suggestions based on the analysis type and results."""
+        suggestions = []
+        
+        basic_info = analysis.get("basic_info", {})
+        width, height = basic_info.get("dimensions", "0x0").split('x')
+        width, height = int(width), int(height)
+        
+        if analysis_type == "ui_mockup":
+            suggestions.extend([
+                "Consider creating interactive prototypes based on this mockup",
+                "Document the UI components and their specifications",
+                "Validate the design with accessibility guidelines"
+            ])
+            
+        elif analysis_type == "code_snippet":
+            if analysis.get("extracted_text"):
+                suggestions.extend([
+                    "Review the extracted code for syntax and best practices",
+                    "Consider converting the image to actual code files",
+                    "Check for any visible errors or improvements"
+                ])
+            
+        elif analysis_type == "screenshot":
+            suggestions.extend([
+                "Document the context and purpose of this screenshot",
+                "Consider annotating important areas for clarity",
+                "Use for bug reports or feature documentation"
+            ])
+            
+        elif analysis_type == "diagram":
+            suggestions.extend([
+                "Convert to editable diagram format if needed",
+                "Ensure all text and labels are readable",
+                "Consider creating digital version for easier editing"
+            ])
+        
+        # General suggestions based on technical characteristics
+        if width < 800 and height < 600:
+            suggestions.append("Image resolution is relatively low - consider higher resolution for better clarity")
+        
+        if analysis.get("extracted_text") and len(analysis["extracted_text"]) > 50:
+            suggestions.append("Significant text content detected - consider extracting for documentation")
+        
+        return suggestions
+    
+    def _format_analysis_report(self, analysis: Dict[str, Any], filename: str, analysis_type: str) -> str:
+        """Format the analysis results into a readable report."""
+        report = f"""# Image Analysis Report: {filename}
+
+## Basic Information
+- **Analysis Type**: {analysis_type}
+- **Dimensions**: {analysis.get('basic_info', {}).get('dimensions', 'Unknown')}
+- **Format**: {analysis.get('basic_info', {}).get('format', 'Unknown')}
+- **File Size**: {analysis.get('basic_info', {}).get('file_size', 'Unknown')} bytes
+- **Color Mode**: {analysis.get('basic_info', {}).get('mode', 'Unknown')}
+
+## Visual Description
+{analysis.get('visual_description', 'No description available')}
+
+## Technical Details
+"""
+        
+        tech_details = analysis.get('technical_details', {})
+        if tech_details.get('brightness'):
+            brightness = tech_details['brightness']
+            report += f"""
+### Color and Brightness Analysis
+- **Average Brightness**: {brightness.get('average', 0):.1f}/255
+- **Brightness Range**: {brightness.get('min', 0)} - {brightness.get('max', 255)}
+"""
+        
+        if tech_details.get('dominant_colors'):
+            report += "\n### Dominant Colors\n"
+            for i, color_info in enumerate(tech_details['dominant_colors'][:3], 1):
+                rgb = color_info['rgb']
+                if isinstance(rgb, tuple) and len(rgb) == 3:
+                    report += f"- **Color {i}**: RGB({rgb[0]}, {rgb[1]}, {rgb[2]}) - {color_info['count']} pixels\n"
+        
+        # Add extracted text if available
+        extracted_text = analysis.get('extracted_text', '')
+        if extracted_text and len(extracted_text.strip()) > 0:
+            report += f"""
+## Extracted Text
+```
+{extracted_text}
+```
+"""
+        
+        # Add suggestions
+        suggestions = analysis.get('suggestions', [])
+        if suggestions:
+            report += "\n## Suggestions\n"
+            for suggestion in suggestions:
+                report += f"- {suggestion}\n"
+        
+        report += f"""
+---
+*Analysis generated by Demonology Image Analysis Tool*
+*Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}*
+"""
+        
+        return report
 
 
 # ---------------------------------------------------------------------
@@ -2526,6 +2920,7 @@ class ToolRegistry:
         self.register_tool(ProjectPlanningTool(safe_root=safe_root))
         self.register_tool(RedditSearchTool())
         self.register_tool(ImageGenerationTool(safe_root=safe_root))
+        self.register_tool(ImageAnalysisTool(safe_root=safe_root))
         self.register_tool(GhidraAnalysisTool(safe_root=safe_root))
 
     def register_tool(self, tool: Tool) -> None:
@@ -2600,6 +2995,12 @@ class ToolRegistry:
                     return await tool.execute(prompt, content_type=content_type, **kwargs)
                 else:
                     return {"success": False, "error": "Missing required 'prompt' parameter"}
+            elif tool_name == "image_analysis":
+                if "image_path" in kwargs:
+                    image_path = kwargs.pop("image_path")
+                    return await tool.execute(image_path, **kwargs)
+                else:
+                    return {"success": False, "error": "Missing required 'image_path' parameter"}
             elif tool_name == "ghidra_analysis":
                 if "binary_path" in kwargs:
                     binary_path = kwargs.pop("binary_path")

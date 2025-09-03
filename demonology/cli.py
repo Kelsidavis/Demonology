@@ -168,6 +168,12 @@ class DemonologyApp:
             self.ui.display_info("Debug command will be handled in next iteration")
         elif cmd == 'tools':
             self._show_tools()
+        elif cmd == 'context' or cmd == 'ctx':
+            self._show_context_stats()
+        elif cmd == 'trim':
+            parts = user_input.split()
+            keep_count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 10
+            self._trim_conversation_history(keep_count)
         else:
             self.ui.display_error(f"Unknown command: /{cmd}. Type /help for available commands.")
 
@@ -191,6 +197,10 @@ class DemonologyApp:
 /config edit          Edit configuration file
 /debug                Debug API response
 /tools                List available tools
+
+[bold]Context Management:[/bold]
+/context, /ctx        Show context usage statistics
+/trim [number]        Keep only recent messages (default: 10)
 
 [bold]Command History:[/bold]
 /history              Show recent command history
@@ -251,6 +261,54 @@ class DemonologyApp:
     def _clear_conversation(self):
         self.conversation_history.clear()
         self.ui.display_success("Conversation history cleared")
+    
+    def _get_context_stats(self) -> Dict[str, Any]:
+        """Get current context usage statistics."""
+        total_chars = 0
+        total_messages = len(self.conversation_history)
+        
+        for message in self.conversation_history:
+            content = message.get('content', '')
+            if isinstance(content, str):
+                total_chars += len(content)
+            elif isinstance(content, list):
+                # Handle tool calls and complex content
+                total_chars += len(str(content))
+        
+        # Rough token estimate (4 chars per token average)
+        estimated_tokens = total_chars // 4
+        
+        return {
+            "total_messages": total_messages,
+            "total_characters": total_chars,
+            "estimated_tokens": estimated_tokens,
+            "context_usage_percent": min(100, (estimated_tokens / 30000) * 100)  # Assume ~30k context limit
+        }
+    
+    def _trim_conversation_history(self, keep_recent: int = 10):
+        """Trim conversation history to keep only recent messages."""
+        if len(self.conversation_history) > keep_recent:
+            removed_count = len(self.conversation_history) - keep_recent
+            self.conversation_history = self.conversation_history[-keep_recent:]
+            self.ui.display_warning(f"Trimmed {removed_count} old messages to manage context size")
+            return removed_count
+        return 0
+    
+    def _show_context_stats(self):
+        """Display current context usage statistics."""
+        stats = self._get_context_stats()
+        
+        self.ui.console.print(f"""
+[bold]Context Usage Statistics:[/bold]
+
+[dim]Messages:[/dim] {stats['total_messages']}
+[dim]Characters:[/dim] {stats['total_characters']:,}
+[dim]Estimated Tokens:[/dim] {stats['estimated_tokens']:,}
+[dim]Context Usage:[/dim] {stats['context_usage_percent']:.1f}%
+
+[yellow]Note:[/yellow] Use `/trim` or `/trim <number>` to reduce context size if needed.
+[yellow]Use `/clear` to completely clear conversation history.[/yellow]
+""")
 
     def _show_config(self):
         cfg = self.config
@@ -813,6 +871,14 @@ Config file: {cfg.config_path}
                 if user_input.startswith('/'):
                     continue
 
+                # Check context size before adding new message
+                stats = self._get_context_stats()
+                if stats['context_usage_percent'] > 80:
+                    self.ui.display_warning(f"⚠️ Context usage at {stats['context_usage_percent']:.1f}% - consider using /trim to reduce size")
+                elif stats['context_usage_percent'] > 95:
+                    self.ui.display_error("🚨 Context nearly full! Auto-trimming to prevent errors...")
+                    self._trim_conversation_history(8)
+                
                 self.conversation_history.append({"role": "user", "content": user_input})
                 # Note: User message display is handled by the input system
 
