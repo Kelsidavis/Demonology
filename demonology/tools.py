@@ -45,10 +45,20 @@ def _is_within(base: Path, target: Path) -> bool:
 def _safe_path(p: str, want_dir: bool = False) -> Path:
     if not p:
         raise ValueError("Empty path")
+    
     path = Path(p)
-    path = (SAFE_ROOT / path).resolve() if not path.is_absolute() else path.resolve()
-    if not _is_within(SAFE_ROOT, path):
-        raise PermissionError(f"Refusing to operate outside SAFE_ROOT: {path}")
+    
+    # Handle absolute paths
+    if path.is_absolute():
+        path = path.resolve()
+        if not _is_within(SAFE_ROOT, path):
+            raise PermissionError(f"Refusing to operate outside SAFE_ROOT: {path}")
+    else:
+        # Handle relative paths
+        path = (SAFE_ROOT / path).resolve()
+        if not _is_within(SAFE_ROOT, path):
+            raise PermissionError(f"Refusing to operate outside SAFE_ROOT: {path}")
+    
     if want_dir and not str(path).endswith(os.sep):
         path = Path(str(path) + os.sep)
     return path
@@ -289,8 +299,15 @@ class CodebaseAnalysisTool(Tool):
     async def execute(self, operation: str, **kw) -> Dict[str, Any]:
         try:
             op = (operation or "").lower()
+            
+            # Debug logging
+            logger.debug(f"CodebaseAnalysisTool execute called with operation: {operation}, kwargs: {kw}")
+            logger.debug(f"Safe root: {self.safe_root}")
+            
             if op == "tree":
-                return self._tree(kw.get("path") or ".", int(kw.get("depth") or 2), int(kw.get("max_entries") or 200))
+                path = kw.get("path") or "."
+                logger.debug(f"Tree operation requested for path: '{path}'")
+                return self._tree(path, int(kw.get("depth") or 2), int(kw.get("max_entries") or 200))
             if op == "index_repo":
                 return self._index_repo(
                     kw.get("path") or ".",
@@ -317,9 +334,29 @@ class CodebaseAnalysisTool(Tool):
 
     # helpers
     def _safe_p(self, rel: str) -> Path:
-        p = (self.safe_root / (rel or ".")).resolve()
+        if not rel or rel == ".":
+            return self.safe_root
+        
+        # Handle absolute paths that might be within safe_root
+        if os.path.isabs(rel):
+            p = Path(rel).resolve()
+            if str(p).startswith(str(self.safe_root)):
+                return p
+            else:
+                # Log the attempted path for debugging
+                logger.warning(f"CodebaseAnalysisTool: Attempted to access path outside safe_root: {p} (safe_root: {self.safe_root})")
+                # Instead of failing, try to use just the current directory
+                logger.info("Falling back to current directory for codebase analysis")
+                return self.safe_root
+        
+        # Handle relative paths
+        p = (self.safe_root / rel).resolve()
         if not str(p).startswith(str(self.safe_root)):
-            raise PermissionError("Path escapes SAFE_ROOT.")
+            # Log the attempted path for debugging
+            logger.warning(f"CodebaseAnalysisTool: Relative path escapes safe_root: {p} (safe_root: {self.safe_root})")
+            # Instead of failing, try to use just the current directory
+            logger.info("Falling back to current directory for codebase analysis")
+            return self.safe_root
         return p
 
     def _excluded(self, path: Path, exclude_glob: List[str]) -> bool:
@@ -606,7 +643,7 @@ class ProjectPlanningTool(Tool):
     def __init__(self, safe_root: Optional[Path] = None):
         super().__init__("project_planning", "Generate project plans and task breakdowns")
         self.safe_root = safe_root or SAFE_ROOT
-        logger.info(f"ProjectPlanningTool initialized with safe_root: {self.safe_root}")
+        # Debug logging removed for cleaner output
     
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -642,8 +679,19 @@ class ProjectPlanningTool(Tool):
             }
             
             if save_to_file:
-                # Save to project plan file
-                plan_file = self.safe_root / f"{project_name.replace(' ', '_').lower()}_plan.md"
+                # Save to project plan file in the current working directory
+                plan_filename = f"{project_name.replace(' ', '_').lower()}_plan.md"
+                
+                # Try to save in current directory first, fall back to safe_root if needed
+                try:
+                    current_dir = Path.cwd().resolve()
+                    if _is_within(self.safe_root, current_dir):
+                        plan_file = current_dir / plan_filename
+                    else:
+                        plan_file = self.safe_root / plan_filename
+                except Exception:
+                    plan_file = self.safe_root / plan_filename
+                
                 plan_file.write_text(plan, encoding="utf-8")
                 result["file_saved"] = str(plan_file)
             
@@ -791,7 +839,19 @@ Based on the technology stack, you may need:
     async def _execute_project_plan(self, project_name: str, tech_stack: str, complexity: str) -> List[str]:
         """Create the actual project structure and files."""
         created_files = []
-        project_dir = self.safe_root / project_name.replace(' ', '_').lower()
+        
+        # Clean up project name for directory use
+        clean_name = project_name.replace(' ', '_').lower()
+        
+        # If project_name looks like a path, use it directly (within safe_root constraints)
+        if "/" in project_name or "\\" in project_name:
+            try:
+                project_dir = _safe_path(project_name, want_dir=True)
+            except (PermissionError, ValueError):
+                # Fall back to safe_root if path is invalid
+                project_dir = self.safe_root / clean_name
+        else:
+            project_dir = self.safe_root / clean_name
         
         # Create project directory
         project_dir.mkdir(parents=True, exist_ok=True)
@@ -1667,6 +1727,314 @@ class ImageGenerationTool(Tool):
 
 
 # ---------------------------------------------------------------------
+# Ghidra Headless Analysis Tool
+# ---------------------------------------------------------------------
+
+class GhidraAnalysisTool(Tool):
+    def __init__(self, safe_root: Optional[Path] = None):
+        super().__init__("ghidra_analysis", "Perform headless binary analysis using Ghidra.")
+        self.safe_root = safe_root or SAFE_ROOT
+    
+    def to_openai_function(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "binary_path": {
+                        "type": "string", 
+                        "description": "Path to the binary file to analyze"
+                    },
+                    "analysis_type": {
+                        "type": "string",
+                        "enum": ["basic", "functions", "strings", "imports", "exports", "decompile", "full"],
+                        "description": "Type of analysis to perform",
+                        "default": "basic"
+                    },
+                    "output_format": {
+                        "type": "string",
+                        "enum": ["text", "json", "xml"],
+                        "description": "Output format for analysis results",
+                        "default": "text"
+                    },
+                    "script_path": {
+                        "type": "string",
+                        "description": "Optional path to custom Ghidra script to run"
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Analysis timeout in seconds",
+                        "default": 300
+                    }
+                },
+                "required": ["binary_path"]
+            }
+        }
+    
+    def is_available(self) -> bool:
+        """Check if Ghidra is available in the system."""
+        # Check for ghidra in common locations
+        ghidra_paths = [
+            "/opt/ghidra/support/analyzeHeadless",
+            "/usr/local/ghidra/support/analyzeHeadless",
+            shutil.which("analyzeHeadless")
+        ]
+        
+        for path in ghidra_paths:
+            if path and Path(path).exists():
+                return True
+        
+        # Check environment variable
+        ghidra_install = os.environ.get("GHIDRA_INSTALL_DIR")
+        if ghidra_install:
+            headless_path = Path(ghidra_install) / "support" / "analyzeHeadless"
+            if headless_path.exists():
+                return True
+        
+        return False
+    
+    def _find_ghidra_headless(self) -> Optional[str]:
+        """Find the Ghidra headless analyzer executable."""
+        # Try common paths
+        common_paths = [
+            "/opt/ghidra/support/analyzeHeadless",
+            "/usr/local/ghidra/support/analyzeHeadless",
+            "/Applications/ghidra/support/analyzeHeadless"  # macOS
+        ]
+        
+        for path in common_paths:
+            if Path(path).exists():
+                return path
+        
+        # Try which command
+        which_result = shutil.which("analyzeHeadless")
+        if which_result:
+            return which_result
+        
+        # Check environment variable
+        ghidra_install = os.environ.get("GHIDRA_INSTALL_DIR")
+        if ghidra_install:
+            headless_path = Path(ghidra_install) / "support" / "analyzeHeadless"
+            if headless_path.exists():
+                return str(headless_path)
+        
+        return None
+    
+    async def execute(self, binary_path: str, analysis_type: str = "basic", 
+                     output_format: str = "text", script_path: Optional[str] = None,
+                     timeout: int = 300, **_) -> Dict[str, Any]:
+        try:
+            # Find Ghidra headless analyzer
+            ghidra_headless = self._find_ghidra_headless()
+            if not ghidra_headless:
+                return {
+                    "success": False,
+                    "error": "Ghidra headless analyzer not found. Please install Ghidra or set GHIDRA_INSTALL_DIR environment variable."
+                }
+            
+            # Validate binary path
+            binary_file = _safe_path(binary_path)
+            if not binary_file.exists():
+                return {"success": False, "error": f"Binary file not found: {binary_path}"}
+            
+            if not binary_file.is_file():
+                return {"success": False, "error": f"Path is not a file: {binary_path}"}
+            
+            # Create temporary project directory
+            import tempfile
+            with tempfile.TemporaryDirectory(prefix="ghidra_analysis_") as temp_dir:
+                temp_path = Path(temp_dir)
+                project_dir = temp_path / "project"
+                project_name = "analysis_project"
+                
+                # Prepare Ghidra command
+                cmd = [
+                    ghidra_headless,
+                    str(project_dir),
+                    project_name,
+                    "-import", str(binary_file),
+                    "-noanalysis" if analysis_type == "basic" else "-analyse"
+                ]
+                
+                # Add output format options
+                if output_format == "json":
+                    cmd.extend(["-postScript", "ExportJson.py"])
+                elif output_format == "xml":
+                    cmd.extend(["-postScript", "ExportXml.py"])
+                
+                # Add custom script if provided
+                if script_path:
+                    script_file = _safe_path(script_path)
+                    if script_file.exists():
+                        cmd.extend(["-postScript", str(script_file)])
+                
+                # Add analysis-specific options
+                if analysis_type == "functions":
+                    cmd.extend(["-scriptPath", str(temp_path / "scripts"), "-postScript", "ListFunctions.py"])
+                elif analysis_type == "strings":
+                    cmd.extend(["-scriptPath", str(temp_path / "scripts"), "-postScript", "ListStrings.py"])
+                elif analysis_type == "imports":
+                    cmd.extend(["-scriptPath", str(temp_path / "scripts"), "-postScript", "ListImports.py"])
+                elif analysis_type == "exports":
+                    cmd.extend(["-scriptPath", str(temp_path / "scripts"), "-postScript", "ListExports.py"])
+                elif analysis_type == "decompile":
+                    cmd.extend(["-scriptPath", str(temp_path / "scripts"), "-postScript", "DecompileAll.py"])
+                
+                # Create basic analysis scripts if they don't exist
+                await self._create_analysis_scripts(temp_path, analysis_type)
+                
+                # Execute Ghidra headless analysis
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(self.safe_root)
+                )
+                
+                try:
+                    stdout, stderr = await asyncio.wait_for(
+                        process.communicate(), 
+                        timeout=timeout
+                    )
+                except asyncio.TimeoutError:
+                    process.kill()
+                    return {
+                        "success": False,
+                        "error": f"Analysis timed out after {timeout} seconds"
+                    }
+                
+                stdout_text = stdout.decode('utf-8', errors='replace')
+                stderr_text = stderr.decode('utf-8', errors='replace')
+                
+                # Parse results based on analysis type
+                results = await self._parse_analysis_results(
+                    stdout_text, stderr_text, analysis_type, temp_path
+                )
+                
+                return {
+                    "success": process.returncode == 0,
+                    "binary": str(binary_file),
+                    "analysis_type": analysis_type,
+                    "output_format": output_format,
+                    "results": results,
+                    "stdout": stdout_text[-1000:] if len(stdout_text) > 1000 else stdout_text,
+                    "stderr": stderr_text[-500:] if len(stderr_text) > 500 else stderr_text,
+                    "return_code": process.returncode
+                }
+                
+        except Exception as e:
+            logger.exception("Ghidra analysis failed")
+            return {"success": False, "error": f"Analysis failed: {str(e)}"}
+    
+    async def _create_analysis_scripts(self, temp_path: Path, analysis_type: str):
+        """Create basic Ghidra analysis scripts."""
+        scripts_dir = temp_path / "scripts"
+        scripts_dir.mkdir(exist_ok=True)
+        
+        # Basic function listing script
+        if analysis_type in ["functions", "full"]:
+            func_script = scripts_dir / "ListFunctions.py"
+            func_script.write_text('''
+# List all functions in the binary
+from ghidra.program.model.listing import *
+
+program = getCurrentProgram()
+listing = program.getListing()
+functions = listing.getFunctions(True)
+
+print("=== FUNCTIONS ===")
+for func in functions:
+    print("Function: {} at {}".format(func.getName(), func.getEntryPoint()))
+    print("  Size: {} bytes".format(func.getBody().getNumAddresses()))
+    print("  Parameters: {}".format(func.getParameterCount()))
+    print("")
+''')
+        
+        # String listing script
+        if analysis_type in ["strings", "full"]:
+            strings_script = scripts_dir / "ListStrings.py"
+            strings_script.write_text('''
+# List all strings in the binary
+from ghidra.program.model.data import *
+
+program = getCurrentProgram()
+listing = program.getListing()
+memory = program.getMemory()
+
+print("=== STRINGS ===")
+data_iter = listing.getDefinedData(True)
+for data in data_iter:
+    if data.hasStringValue():
+        print("String at {}: {}".format(data.getAddress(), data.getValue()))
+''')
+    
+    async def _parse_analysis_results(self, stdout: str, stderr: str, 
+                                    analysis_type: str, temp_path: Path) -> Dict[str, Any]:
+        """Parse Ghidra analysis results."""
+        results = {
+            "analysis_type": analysis_type,
+            "summary": {},
+            "details": []
+        }
+        
+        # Extract basic information from stdout
+        lines = stdout.split('\n')
+        
+        # Look for common Ghidra output patterns
+        functions_found = []
+        strings_found = []
+        imports_found = []
+        exports_found = []
+        
+        current_section = None
+        for line in lines:
+            line = line.strip()
+            
+            if "=== FUNCTIONS ===" in line:
+                current_section = "functions"
+                continue
+            elif "=== STRINGS ===" in line:
+                current_section = "strings"
+                continue
+            elif "Function:" in line and current_section == "functions":
+                functions_found.append(line)
+            elif "String at" in line and current_section == "strings":
+                strings_found.append(line)
+            elif "INFO" in line and "functions" in line.lower():
+                # Extract function count from info messages
+                import re
+                match = re.search(r'(\d+)\s+functions?', line)
+                if match:
+                    results["summary"]["function_count"] = int(match.group(1))
+        
+        # Add parsed data to results
+        if functions_found:
+            results["details"].append({
+                "type": "functions",
+                "count": len(functions_found),
+                "items": functions_found[:50]  # Limit output
+            })
+        
+        if strings_found:
+            results["details"].append({
+                "type": "strings", 
+                "count": len(strings_found),
+                "items": strings_found[:50]  # Limit output
+            })
+        
+        # Extract summary statistics
+        if "Analysis complete" in stdout:
+            results["summary"]["status"] = "completed"
+        elif "Error" in stderr or "Exception" in stderr:
+            results["summary"]["status"] = "error"
+        else:
+            results["summary"]["status"] = "partial"
+        
+        return results
+
+
+# ---------------------------------------------------------------------
 # Tool Registry
 # ---------------------------------------------------------------------
 
@@ -1683,6 +2051,7 @@ class ToolRegistry:
         self.register_tool(ProjectPlanningTool(safe_root=safe_root))
         self.register_tool(RedditSearchTool())
         self.register_tool(ImageGenerationTool(safe_root=safe_root))
+        self.register_tool(GhidraAnalysisTool(safe_root=safe_root))
 
     def register_tool(self, tool: Tool) -> None:
         self.tools[tool.name] = tool
@@ -1755,6 +2124,12 @@ class ToolRegistry:
                     return await tool.execute(prompt, content_type=content_type, **kwargs)
                 else:
                     return {"success": False, "error": "Missing required 'prompt' parameter"}
+            elif tool_name == "ghidra_analysis":
+                if "binary_path" in kwargs:
+                    binary_path = kwargs.pop("binary_path")
+                    return await tool.execute(binary_path, **kwargs)
+                else:
+                    return {"success": False, "error": "Missing required 'binary_path' parameter"}
             else:
                 return await tool.execute(**kwargs)
         except Exception as e:

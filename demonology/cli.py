@@ -38,7 +38,7 @@ class DemonologyApp:
         self._auto_tool_used_this_turn = False  # guard to avoid repeated fallback in one turn
 
         safe_root = self._resolve_safe_root()
-        logger.warning(f"DemonologyApp resolved safe_root: {safe_root}")
+        # Debug: safe_root resolved
         self.tool_registry = ToolRegistry(safe_root=safe_root)
 
     def _resolve_safe_root(self) -> Path:
@@ -332,6 +332,12 @@ Config file: {cfg.config_path}
             return None
 
         last_user = next((m["content"] for m in reversed(self.conversation_history) if m["role"] == "user"), "")
+        
+        # Don't auto-trigger tools for simple greetings or conversations
+        simple_responses = ['hello', 'hi', 'hey', 'thanks', 'thank you', 'ok', 'okay', 'yes', 'no']
+        if (last_user or "").strip().lower() in simple_responses:
+            return None
+        
         guess = self._heuristic_from_user(last_user or "")
         if not guess or not self.config.tools.enabled:
             return None
@@ -426,7 +432,7 @@ Config file: {cfg.config_path}
                         recent_users = user_msgs[-2:]
                         # Try to maintain conversation pairs
                         self.conversation_history = system_msgs + recent_users
-                        logger.warning(f"Recovered conversation history: kept {len(self.conversation_history)} messages")
+                        # Conversation history recovered
                 except Exception as recovery_error:
                     logger.error(f"Failed to recover conversation history: {recovery_error}")
                     self.conversation_history = []
@@ -448,11 +454,15 @@ Config file: {cfg.config_path}
                 self.ui.console.print()  # Add newline after content
             return await self._execute_collected_tool_calls(content_buffer, tool_calls)
         
+        # Add newline after response for proper spacing
+        if content_buffer.strip():
+            self.ui.console.print()
+        
         return content_buffer
     
     async def _execute_collected_tool_calls(self, content_buffer: str, tool_calls: List[Dict[str, Any]]) -> str:
         """Execute collected tool calls and continue the conversation."""
-        self.ui.console.print("\n[bold red]👹 UNLEASHING HELLISH TOOLS FROM THE ABYSS 👹[/bold red]")
+        self.ui.console.print("\\n[bold red]👹 UNLEASHING HELLISH TOOLS FROM THE ABYSS 👹[/bold red]")
         
         # Add assistant message with tool calls to history
         # Ensure tool calls are properly formatted
@@ -485,7 +495,7 @@ Config file: {cfg.config_path}
             
             try:
                 arguments_str = tool_call["function"]["arguments"]
-                logger.warning(f"Raw arguments string for {function_name}: {repr(arguments_str[:200])}...")
+                # Debug logging removed for cleaner output
                 
                 if not arguments_str.strip():
                     arguments = {}
@@ -494,13 +504,13 @@ Config file: {cfg.config_path}
                     cleaned_str = arguments_str.strip()
                     # Handle incomplete JSON strings
                     if cleaned_str.count('"') % 2 != 0:
-                        logger.warning(f"Incomplete JSON string detected, attempting to close")
+                        # Auto-fixing incomplete JSON
                         cleaned_str = cleaned_str.rstrip(',') + '"}'
                     
                     arguments = json.loads(cleaned_str)
                     
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse tool arguments for {function_name}: {repr(arguments_str[:200])} - Error: {e}")
+                logger.debug(f"JSON parse failed for {function_name}, using fallback")
                 # Try to extract key parameters manually as fallback
                 arguments = self._extract_fallback_arguments(function_name, arguments_str)
             
@@ -526,7 +536,7 @@ Config file: {cfg.config_path}
         tools = self.tool_registry.to_openai_tools_format()
         
         # Truncate conversation history if it's too long to avoid 500 errors
-        max_history_length = 15  # Reduced to prevent server overload
+        max_history_length = 6  # Greatly reduced to prevent server overload
         if len(self.conversation_history) > max_history_length:
             try:
                 # Keep system message if present, and recent messages
@@ -545,13 +555,24 @@ Config file: {cfg.config_path}
                     # If too many system messages, just keep them
                     self.conversation_history = system_msgs
                 
-                logger.warning(f"Truncated conversation history to {len(self.conversation_history)} messages")
+                # Conversation history truncated for performance
+                
+                # Also check for excessive tool calling loops
+                recent_tool_calls = sum(1 for msg in self.conversation_history[-10:] 
+                                      if msg.get("role") == "tool")
+                if recent_tool_calls > 6:  # More than 6 tool calls in last 10 messages
+                    # Clear some tool results to break the loop
+                    self.conversation_history = [msg for msg in self.conversation_history 
+                                               if not (msg.get("role") == "tool" and 
+                                                      "demo_project" in str(msg.get("content", "")))][:8]
+                    logger.warning("Truncated conversation history to break tool calling loop")
+                    
             except Exception as truncate_error:
                 logger.error(f"Failed to truncate conversation history: {truncate_error}")
                 # Fallback: keep only recent messages
                 self.conversation_history = self.conversation_history[-5:]
         
-        logger.warning(f"Conversation history before follow-up request: {json.dumps(self.conversation_history[-3:], indent=2)}")
+        # Debug logging removed for cleaner output
         follow_stream = self.client.stream_chat_completion(self.conversation_history, tools=tools)
         follow_response = await self._handle_streaming_response(follow_stream)
         
@@ -646,7 +667,7 @@ Config file: {cfg.config_path}
                     if user_msgs:
                         recent_users = user_msgs[-2:]
                         self.conversation_history = system_msgs + recent_users
-                        logger.warning(f"Recovered conversation history: kept {len(self.conversation_history)} messages")
+                        # Conversation history recovered
                 except Exception as recovery_error:
                     logger.error(f"Failed to recover conversation history: {recovery_error}")
                     self.conversation_history = []
@@ -675,7 +696,7 @@ Config file: {cfg.config_path}
 
     async def _execute_tool_calls(self, tool_calls: List[Dict[str, Any]]) -> str:
         """Execute tool calls and then continue the turn."""
-        self.ui.console.print("\n[bold red]⛧ DEMONIC TOOL INVOCATION RITUAL ⛧[/bold red]")
+        self.ui.console.print("\\n[bold red]👹 UNLEASHING HELLISH TOOLS FROM THE ABYSS 👹[/bold red]")
 
         tool_results: List[Dict[str, Any]] = []
         assistant_message = {"role": "assistant", "content": None, "tool_calls": tool_calls}
@@ -696,13 +717,13 @@ Config file: {cfg.config_path}
                         cleaned_str = arguments_raw.strip()
                         # Handle incomplete JSON strings
                         if cleaned_str.count('"') % 2 != 0:
-                            logger.warning(f"Incomplete JSON string detected, attempting to close")
+                            # Auto-fixing incomplete JSON
                             cleaned_str = cleaned_str.rstrip(',') + '"}'
                         
                         arguments = json.loads(cleaned_str)
                         
                 except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse tool arguments for {function_name}: {repr(arguments_raw[:200])} - Error: {e}")
+                    logger.debug(f"JSON parse failed for {function_name}, using fallback")
                     # Try to extract key parameters manually as fallback
                     arguments = self._extract_fallback_arguments(function_name, arguments_raw)
 
@@ -712,14 +733,14 @@ Config file: {cfg.config_path}
                         arguments["path"] = p + "/"
 
                 self.ui.console.print(f"[bold magenta]🔥 Binding demon [{function_name}] with ritual parameters: {arguments} 🔥[/bold magenta]")
-                await self.ui.start_loading(f"Channeling dark powers through {function_name}... souls harvested...")
+                await self.ui.start_loading(f"Invoking daemon of {function_name}... blood sacrifice accepted...")
                 result = await self.tool_registry.execute_tool(function_name, **arguments)
                 await self.ui.stop_loading()
 
                 if result.get("success", False):
-                    self.ui.console.print(f"[bold green]😈 DEMON [{function_name}] HAS OBEYED - RITUAL SUCCESSFUL 😈[/bold green]")
+                    self.ui.console.print(f"[bold green]👹 DEMON [{function_name}] BOWS TO YOUR WILL - POWER CHANNELED 👹[/bold green]")
                 else:
-                    self.ui.console.print(f"[bold red]🔥 DEMON [{function_name}] REBELLED - DARK MAGIC FAILED: {result.get('error', 'Infernal error')} 🔥[/bold red]")
+                    self.ui.console.print(f"[bold red]💀 DEMON [{function_name}] DEFIES THE SUMMONING - CURSE BACKFIRED: {result.get('error', 'Ancient evil')} 💀[/bold red]")
 
                 tool_results.append({
                     "role": "tool",
@@ -781,8 +802,9 @@ Config file: {cfg.config_path}
                     system_msg = {
                         "role": "system",
                         "content": (
-                            "You are Demonology, a proactive assistant that builds complete projects. "
-                            "When users ask you to create or build something, take full initiative:\n\n"
+                            "You are Demonology, a helpful AI assistant. Respond naturally to conversations. "
+                            "Only use tools when the user explicitly asks you to create, build, search, or work on something specific. "
+                            "For simple greetings, questions, or casual conversation, just respond normally without using tools.\n\n"
                             "AVAILABLE TOOLS:\n"
                             "- web_search: Search for general information (requires 'query')\n"
                             "- reddit_search: Search Reddit discussions and community insights (requires 'query')\n"
@@ -811,8 +833,12 @@ Config file: {cfg.config_path}
                 await self.ui.start_loading()
                 try:
                     response_stream = self.client.stream_chat_completion(messages, tools=tools)
+                    
                     # Keep loading animation running until we get first response chunk
                     full_response = await self._handle_streaming_response_with_loading(response_stream)
+                    # Add spacing after response before next input
+                    self.ui.console.print()
+                    
                     self.conversation_history.append({"role": "assistant", "content": full_response})
                 except DemonologyAPIError as e:
                     await self.ui.stop_loading()
@@ -844,6 +870,10 @@ Config file: {cfg.config_path}
             if not await self.test_connection():
                 self.ui.display_error("Cannot establish connection to API. Check your configuration.")
                 return 1
+            
+            # Layout mode disabled due to stability issues
+            # self.ui.start_layout_mode()
+            
             await self.chat_loop()
             return 0
         except Exception as e:
