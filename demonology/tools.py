@@ -606,6 +606,7 @@ class ProjectPlanningTool(Tool):
     def __init__(self, safe_root: Optional[Path] = None):
         super().__init__("project_planning", "Generate project plans and task breakdowns")
         self.safe_root = safe_root or SAFE_ROOT
+        logger.info(f"ProjectPlanningTool initialized with safe_root: {self.safe_root}")
     
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -1417,6 +1418,7 @@ class ImageGenerationTool(Tool):
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string", "description": "Text description of the image to generate"},
+                    "content_type": {"type": "string", "enum": ["auto", "texture", "character", "object", "scene"], "description": "Type of image content for better prompt optimization", "default": "auto"},
                     "style": {"type": "string", "enum": ["realistic", "artistic", "anime", "fantasy", "pixel-art", "concept-art"], "description": "Image style", "default": "realistic"},
                     "size": {"type": "string", "enum": ["512x512", "768x768", "1024x1024"], "description": "Image dimensions", "default": "512x512"},
                     "filename": {"type": "string", "description": "Filename for saved image (optional)"},
@@ -1426,7 +1428,7 @@ class ImageGenerationTool(Tool):
             }
         }
     
-    async def execute(self, prompt: str, style: str = "realistic", size: str = "512x512", 
+    async def execute(self, prompt: str, content_type: str = "auto", style: str = "realistic", size: str = "512x512", 
                      filename: str = None, save_image: bool = True, **kwargs) -> Dict[str, Any]:
         try:
             import requests
@@ -1434,8 +1436,8 @@ class ImageGenerationTool(Tool):
             from datetime import datetime
             import hashlib
             
-            # Enhance prompt based on style
-            enhanced_prompt = self._enhance_prompt(prompt, style)
+            # Enhance prompt based on style and content type
+            enhanced_prompt = self._enhance_prompt(prompt, style, content_type)
             
             # Try multiple APIs in order of preference
             apis = [
@@ -1508,8 +1510,47 @@ class ImageGenerationTool(Tool):
             logger.exception("ImageGenerationTool error")
             return {"success": False, "error": str(e)}
     
-    def _enhance_prompt(self, prompt: str, style: str) -> str:
-        """Enhance the prompt based on the selected style."""
+    def _enhance_prompt(self, prompt: str, style: str, content_type: str = "auto") -> str:
+        """Enhance the prompt based on the selected style and content type."""
+        # Determine content type
+        if content_type == "auto":
+            # Auto-detect what type of image is being requested
+            prompt_lower = prompt.lower()
+            
+            is_texture = any(word in prompt_lower for word in [
+                'texture', 'pattern', 'material', 'surface', 'seamless', 'tileable',
+                'wood grain', 'fabric', 'metal', 'stone', 'concrete', 'marble'
+            ])
+            
+            is_character = any(word in prompt_lower for word in [
+                'person', 'character', 'man', 'woman', 'face', 'portrait', 'figure',
+                'human', 'people', 'body', 'head', 'eyes'
+            ])
+            
+            is_object = any(word in prompt_lower for word in [
+                'object', 'item', 'tool', 'weapon', 'vehicle', 'furniture', 'product'
+            ])
+            
+            is_scene = any(word in prompt_lower for word in [
+                'scene', 'landscape', 'environment', 'room', 'building', 'place', 
+                'location', 'background', 'setting'
+            ])
+            
+            # Determine the content type based on detection
+            if is_texture:
+                detected_type = 'texture'
+            elif is_character:
+                detected_type = 'character'
+            elif is_object:
+                detected_type = 'object'
+            elif is_scene:
+                detected_type = 'scene'
+            else:
+                detected_type = 'general'
+        else:
+            detected_type = content_type
+        
+        # Base style prefixes
         style_prefixes = {
             "realistic": "photorealistic, high quality, detailed, ",
             "artistic": "artistic, painterly, creative, ",
@@ -1519,8 +1560,27 @@ class ImageGenerationTool(Tool):
             "concept-art": "concept art, digital painting, professional, "
         }
         
+        # Content-specific suffixes to avoid unwanted elements
+        content_suffixes = {
+            'texture': ", seamless pattern, isolated on neutral background, no objects, no people, no scenes, tileable, material study",
+            'character': ", isolated character, plain background, no environment, no scenes, character focus, portrait style",
+            'object': ", isolated object, plain background, no people, no scenes, product shot, clean composition",
+            'scene': ", environmental art, atmospheric, detailed setting",
+            'general': ""
+        }
+        
+        # Build enhanced prompt
         prefix = style_prefixes.get(style, "")
-        return f"{prefix}{prompt}"
+        enhanced = f"{prefix}{prompt}"
+        
+        # Add content-specific instructions
+        if detected_type in content_suffixes:
+            enhanced += content_suffixes[detected_type]
+        
+        # Add quality modifiers
+        enhanced += ", high resolution, professional quality"
+        
+        return enhanced
     
     async def _try_pollinations_ai(self, prompt: str, size: str) -> Optional[Tuple[bytes, str]]:
         """Try Pollinations.ai API - completely free, no API key needed."""
@@ -1691,7 +1751,8 @@ class ToolRegistry:
             elif tool_name == "image_generation":
                 if "prompt" in kwargs:
                     prompt = kwargs.pop("prompt")
-                    return await tool.execute(prompt, **kwargs)
+                    content_type = kwargs.pop("content_type", "auto")
+                    return await tool.execute(prompt, content_type=content_type, **kwargs)
                 else:
                     return {"success": False, "error": "Missing required 'prompt' parameter"}
             else:

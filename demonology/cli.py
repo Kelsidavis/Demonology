@@ -38,6 +38,7 @@ class DemonologyApp:
         self._auto_tool_used_this_turn = False  # guard to avoid repeated fallback in one turn
 
         safe_root = self._resolve_safe_root()
+        logger.warning(f"DemonologyApp resolved safe_root: {safe_root}")
         self.tool_registry = ToolRegistry(safe_root=safe_root)
 
     def _resolve_safe_root(self) -> Path:
