@@ -6,7 +6,8 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .base import Tool, _safe_path
+from .base import Tool, _is_within
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,28 @@ class FileOperationsTool(Tool):
         super().__init__("file_operations", "Create/read/list/delete files and directories (SAFE_ROOT-fenced).")
         from .base import SAFE_ROOT
         self.safe_root = (safe_root or SAFE_ROOT).resolve()
+    
+    def _safe_path(self, p: str, want_dir: bool = False) -> Path:
+        """Safe path resolution using this tool's safe_root."""
+        if not p:
+            raise ValueError("Empty path")
+        
+        path = Path(p)
+        
+        # Handle absolute paths
+        if path.is_absolute():
+            path = path.resolve()
+            if not _is_within(self.safe_root, path):
+                raise PermissionError(f"Refusing to operate outside SAFE_ROOT: {path}")
+        else:
+            # Handle relative paths
+            path = (self.safe_root / path).resolve()
+            if not _is_within(self.safe_root, path):
+                raise PermissionError(f"Refusing to operate outside SAFE_ROOT: {path}")
+        
+        if want_dir and not str(path).endswith(os.sep):
+            path = Path(str(path) + os.sep)
+        return path
 
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -72,7 +95,7 @@ class FileOperationsTool(Tool):
     async def _create_or_write_file(self, path: Optional[str], content: str) -> Dict[str, Any]:
         if not path:
             return {"success": False, "error": "Missing 'path' for create_or_write_file"}
-        p = _safe_path(path)
+        p = self._safe_path(path)
         if p.exists() and p.is_dir():
             return {"success": False, "error": f"Path is a directory: {p}"}
         # Extension filter disabled unless _ALLOWED_EXTS is a non-empty set
@@ -96,7 +119,7 @@ class FileOperationsTool(Tool):
     async def _create_directory(self, path: Optional[str]) -> Dict[str, Any]:
         if not path:
             return {"success": False, "error": "Missing 'path' for create_directory"}
-        d = _safe_path(path, want_dir=True)
+        d = self._safe_path(path, want_dir=True)
         d.mkdir(parents=True, exist_ok=True)
         ok = d.exists() and d.is_dir()
         return {
@@ -110,14 +133,14 @@ class FileOperationsTool(Tool):
     async def _read_file(self, path: Optional[str]) -> Dict[str, Any]:
         if not path:
             return {"success": False, "error": "Missing 'path' for read"}
-        p = _safe_path(path)
+        p = self._safe_path(path)
         if not p.exists() or not p.is_file():
             return {"success": False, "error": f"File not found: {p}"}
         content = p.read_text(encoding="utf-8", errors="replace")
         return {"success": True, "operation": "read", "path": str(p), "content": content}
 
     async def _list_directory(self, path: Optional[str]) -> Dict[str, Any]:
-        d = _safe_path(path or ".", want_dir=True)
+        d = self._safe_path(path or ".", want_dir=True)
         if not d.exists() or not d.is_dir():
             return {"success": False, "error": f"Directory not found: {d}"}
         items: List[Dict[str, Any]] = []
@@ -135,7 +158,7 @@ class FileOperationsTool(Tool):
     async def _delete_file(self, path: Optional[str]) -> Dict[str, Any]:
         if not path:
             return {"success": False, "error": "Missing 'path' for delete_file"}
-        p = _safe_path(path)
+        p = self._safe_path(path)
         if not p.exists():
             return {"success": False, "error": f"File not found: {p}"}
         if p.is_dir():
@@ -146,7 +169,7 @@ class FileOperationsTool(Tool):
     async def _delete_directory(self, path: Optional[str], recursive: bool) -> Dict[str, Any]:
         if not path:
             return {"success": False, "error": "Missing 'path' for delete_directory"}
-        d = _safe_path(path, want_dir=True)
+        d = self._safe_path(path, want_dir=True)
         if not d.exists() or not d.is_dir():
             return {"success": False, "error": f"Directory not found: {d}"}
         if recursive:

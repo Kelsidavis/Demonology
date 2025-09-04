@@ -91,7 +91,9 @@ class DemonologyApp:
             max_tokens=self.config.api.max_tokens,
             temperature=self.config.api.temperature,
             top_p=self.config.api.top_p,
-            timeout=self.config.api.timeout
+            timeout=self.config.api.timeout,
+            max_retries=getattr(self.config.api, 'max_retries', 3),
+            retry_delay=getattr(self.config.api, 'retry_delay', 2.0)
         )
 
     async def cleanup(self):
@@ -116,6 +118,49 @@ class DemonologyApp:
         except Exception as e:
             await self.ui.stop_loading()
             self.ui.display_error(f"Connection ritual failed: {str(e)}")
+            return False
+    
+    async def _manual_server_restart(self):
+        """Handle manual server restart command."""
+        try:
+            await self.ui.start_loading("Manually restarting server...")
+            success = await self.client.restart_server_and_reconnect()
+            await self.ui.stop_loading()
+            if success:
+                self.ui.display_success("✅ Server manually restarted successfully!")
+            else:
+                self.ui.display_error("❌ Manual server restart failed.")
+        except Exception as e:
+            await self.ui.stop_loading()
+            self.ui.display_error(f"❌ Error during manual restart: {e}")
+    
+    async def ensure_server_connection(self) -> bool:
+        """
+        Ensure server connection is available, attempting restart if needed.
+        Returns True if connection is established, False otherwise.
+        """
+        # First try normal connection
+        if await self.test_connection():
+            return True
+        
+        # If connection failed, try to restart server
+        self.ui.display_error("🔄 Server connection failed. Attempting automatic restart...")
+        await self.ui.start_loading("Restarting server and clearing VRAM...")
+        
+        try:
+            success = await self.client.restart_server_and_reconnect()
+            await self.ui.stop_loading()
+            
+            if success:
+                self.ui.display_success("✅ Server restarted successfully! Connection restored.")
+                return True
+            else:
+                self.ui.display_error("❌ Server restart failed. Please start your llama server manually.")
+                return False
+                
+        except Exception as e:
+            await self.ui.stop_loading()
+            self.ui.display_error(f"❌ Error during server restart: {e}")
             return False
 
     def process_command(self, user_input: str) -> bool:
@@ -166,14 +211,34 @@ class DemonologyApp:
                 self._show_config()
         elif cmd == 'debug':
             self.ui.display_info("Debug command will be handled in next iteration")
+        elif cmd == 'restart':
+            asyncio.create_task(self._manual_server_restart())
         elif cmd == 'tools':
             self._show_tools()
         elif cmd == 'context' or cmd == 'ctx':
             self._show_context_stats()
         elif cmd == 'trim':
             parts = user_input.split()
-            keep_count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 10
-            self._trim_conversation_history(keep_count)
+            if len(parts) > 1 and parts[1] == 'smart':
+                # Force smart trimming
+                removed = self._smart_trim_context()
+                if removed == 0:
+                    self.ui.display_info("Context is already optimally sized.")
+            else:
+                keep_count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 10
+                self._trim_conversation_history(keep_count)
+        elif cmd == 'optimize':
+            # Optimize context using smart trimming
+            stats = self._get_context_stats()
+            if stats['context_usage_percent'] < 50:
+                self.ui.display_info(f"Context usage is only {stats['context_usage_percent']:.1f}% - no optimization needed.")
+            else:
+                removed = self._smart_trim_context()
+                if removed > 0:
+                    new_stats = self._get_context_stats()
+                    self.ui.display_success(f"✅ Context optimized: {stats['context_usage_percent']:.1f}% → {new_stats['context_usage_percent']:.1f}%")
+                else:
+                    self.ui.display_info("Context is already optimally sized.")
         else:
             self.ui.display_error(f"Unknown command: /{cmd}. Type /help for available commands.")
 
@@ -196,11 +261,14 @@ class DemonologyApp:
 /config               Show current configuration
 /config edit          Edit configuration file
 /debug                Debug API response
+/restart              Restart llama server and clear VRAM
 /tools                List available tools
 
 [bold]Context Management:[/bold]
 /context, /ctx        Show context usage statistics
 /trim [number]        Keep only recent messages (default: 10)
+/trim smart           Intelligent context optimization
+/optimize             Auto-optimize context usage
 
 [bold]Command History:[/bold]
 /history              Show recent command history
@@ -275,14 +343,22 @@ class DemonologyApp:
                 # Handle tool calls and complex content
                 total_chars += len(str(content))
         
-        # Rough token estimate (4 chars per token average)
-        estimated_tokens = total_chars // 4
+        # More accurate token estimate for coding content (3.5 chars per token average)
+        estimated_tokens = int(total_chars / 3.5)
+        
+        # Use configured context length
+        context_limit = getattr(self.config.api, 'context_length', 26768)
+        context_buffer = getattr(self.config.api, 'context_buffer', 2048)
+        available_context = context_limit - context_buffer
         
         return {
             "total_messages": total_messages,
             "total_characters": total_chars,
             "estimated_tokens": estimated_tokens,
-            "context_usage_percent": min(100, (estimated_tokens / 30000) * 100)  # Assume ~30k context limit
+            "context_limit": context_limit,
+            "available_context": available_context,
+            "context_usage_percent": min(100, (estimated_tokens / available_context) * 100),
+            "needs_trimming": estimated_tokens > (available_context * getattr(self.config.api, 'auto_trim_threshold', 0.85))
         }
     
     def _trim_conversation_history(self, keep_recent: int = 10):
@@ -294,9 +370,101 @@ class DemonologyApp:
             return removed_count
         return 0
     
+    def _smart_trim_context(self) -> int:
+        """Intelligently trim context while preserving important messages."""
+        if not getattr(self.config.api, 'smart_trimming', True):
+            # Fall back to basic trimming
+            return self._trim_conversation_history(10)
+        
+        stats = self._get_context_stats()
+        if not stats['needs_trimming']:
+            return 0
+        
+        # Preserve system messages and recent interactions
+        system_messages = []
+        regular_messages = []
+        
+        for msg in self.conversation_history:
+            if msg.get('role') == 'system':
+                system_messages.append(msg)
+            else:
+                regular_messages.append(msg)
+        
+        # Calculate how many regular messages to keep
+        target_context = int(stats['available_context'] * 0.7)  # Aim for 70% usage
+        current_tokens = stats['estimated_tokens']
+        tokens_to_remove = current_tokens - target_context
+        
+        if tokens_to_remove <= 0:
+            return 0
+        
+        # Remove messages from oldest first, but preserve recent context
+        messages_to_keep = []
+        tokens_kept = 0
+        
+        # Always keep last 6 messages for immediate context
+        recent_messages = regular_messages[-6:] if len(regular_messages) >= 6 else regular_messages
+        for msg in recent_messages:
+            content_length = len(str(msg.get('content', '')))
+            tokens_kept += int(content_length / 3.5)
+            messages_to_keep.append(msg)
+        
+        # Add older messages if we have token budget
+        remaining_tokens = target_context - tokens_kept
+        for msg in reversed(regular_messages[:-6]):  # Work backwards from older messages
+            content_length = len(str(msg.get('content', '')))
+            msg_tokens = int(content_length / 3.5)
+            
+            if msg_tokens <= remaining_tokens:
+                messages_to_keep.insert(-6 if len(messages_to_keep) >= 6 else 0, msg)
+                remaining_tokens -= msg_tokens
+            else:
+                break
+        
+        # Rebuild conversation history
+        original_count = len(self.conversation_history)
+        self.conversation_history = system_messages + messages_to_keep
+        removed_count = original_count - len(self.conversation_history)
+        
+        if removed_count > 0:
+            self.ui.display_warning(f"🧠 Smart-trimmed {removed_count} messages to manage context ({stats['context_usage_percent']:.1f}% → ~70%)")
+        
+        return removed_count
+    
+    def _auto_manage_context(self):
+        """Automatically manage context size and show warnings."""
+        stats = self._get_context_stats()
+        
+        # Show periodic warnings
+        if stats['context_usage_percent'] >= 90:
+            self.ui.display_error("🚨 Context 90%+ full! Auto-trimming to prevent overflow...")
+            self._smart_trim_context()
+        elif stats['context_usage_percent'] >= 75:
+            # Only show warning every few messages to avoid spam
+            if len(self.conversation_history) % 5 == 0:  # Every 5th message
+                self.ui.display_warning(f"⚠️  Context {stats['context_usage_percent']:.0f}% full. Use `/trim` or `/clear` if needed.")
+        
+        # Trigger automatic smart trimming if enabled and threshold exceeded
+        if getattr(self.config.api, 'smart_trimming', True) and stats['needs_trimming']:
+            removed = self._smart_trim_context()
+            if removed > 0:
+                # Refresh stats after trimming
+                stats = self._get_context_stats()
+    
     def _show_context_stats(self):
         """Display current context usage statistics."""
         stats = self._get_context_stats()
+        
+        # Color-code usage based on percentage
+        if stats['context_usage_percent'] >= 90:
+            usage_color = "red"
+            warning = "\n⚠️  [red]CRITICAL: Context nearly full! Auto-trim will occur soon.[/red]"
+        elif stats['context_usage_percent'] >= 75:
+            usage_color = "yellow"
+            warning = "\n⚠️  [yellow]WARNING: Context getting full. Consider trimming.[/yellow]"
+        else:
+            usage_color = "green"
+            warning = ""
         
         self.ui.console.print(f"""
 [bold]Context Usage Statistics:[/bold]
@@ -304,10 +472,16 @@ class DemonologyApp:
 [dim]Messages:[/dim] {stats['total_messages']}
 [dim]Characters:[/dim] {stats['total_characters']:,}
 [dim]Estimated Tokens:[/dim] {stats['estimated_tokens']:,}
-[dim]Context Usage:[/dim] {stats['context_usage_percent']:.1f}%
+[dim]Context Limit:[/dim] {stats['context_limit']:,} (Available: {stats['available_context']:,})
+[dim]Context Usage:[/dim] [{usage_color}]{stats['context_usage_percent']:.1f}%[/{usage_color}]
+[dim]Smart Trimming:[/dim] {'Enabled' if getattr(self.config.api, 'smart_trimming', True) else 'Disabled'}{warning}
 
-[yellow]Note:[/yellow] Use `/trim` or `/trim <number>` to reduce context size if needed.
-[yellow]Use `/clear` to completely clear conversation history.[/yellow]
+[yellow]Commands:[/yellow]
+• `/trim [number]` - Keep only N recent messages
+• `/trim smart` - Intelligent context optimization
+• `/optimize` - Auto-optimize context usage
+• `/clear` - Clear entire conversation history
+• `/context` - Show these statistics
 """)
 
     def _show_config(self):
@@ -871,16 +1045,13 @@ Config file: {cfg.config_path}
                 if user_input.startswith('/'):
                     continue
 
-                # Check context size before adding new message
-                stats = self._get_context_stats()
-                if stats['context_usage_percent'] > 80:
-                    self.ui.display_warning(f"⚠️ Context usage at {stats['context_usage_percent']:.1f}% - consider using /trim to reduce size")
-                elif stats['context_usage_percent'] > 95:
-                    self.ui.display_error("🚨 Context nearly full! Auto-trimming to prevent errors...")
-                    self._trim_conversation_history(8)
+# Context management now handled by _auto_manage_context()
                 
                 self.conversation_history.append({"role": "user", "content": user_input})
                 # Note: User message display is handled by the input system
+
+                # Automatically manage context before sending request
+                self._auto_manage_context()
 
                 messages = self.conversation_history.copy()
                 tools = self.tool_registry.to_openai_tools_format() if self.config.tools.enabled else None
@@ -929,10 +1100,27 @@ Config file: {cfg.config_path}
                     self.conversation_history.append({"role": "assistant", "content": full_response})
                 except DemonologyAPIError as e:
                     await self.ui.stop_loading()
-                    # More user-friendly error display
-                    if "500" in str(e):
-                        self.ui.display_error("𐕣 API Error: HTTP error 500: Unable to read error details 𐕣")
+                    
+                    # If it's a server error, try to restart and reconnect
+                    if "500" in str(e) or "connection" in str(e).lower():
+                        self.ui.display_error("𐕣 Server error detected. Attempting automatic recovery... 𐕣")
+                        
+                        # Try to restart server and reconnect
+                        if await self.ensure_server_connection():
+                            self.ui.display_success("🔄 Connection restored! Retrying your request...")
+                            # Retry the request once
+                            try:
+                                response_stream = self.client.stream_chat_completion(messages, tools=tools)
+                                full_response = await self._handle_streaming_response_with_loading(response_stream)
+                                self.ui.console.print()
+                                self.conversation_history.append({"role": "assistant", "content": full_response})
+                                continue  # Successfully recovered and processed
+                            except Exception as retry_e:
+                                self.ui.display_error(f"𐕣 Retry failed: {str(retry_e)} 𐕣")
+                        else:
+                            self.ui.display_error("𐕣 Server recovery failed. Please check your server manually. 𐕣")
                     else:
+                        # Non-server errors, display normally
                         self.ui.display_error(f"𐕣 API Error: {str(e)} 𐕣")
                     # Continue conversation instead of breaking
                 except Exception as e:
@@ -954,8 +1142,8 @@ Config file: {cfg.config_path}
         try:
             await self.initialize()
             self.ui.display_banner()
-            if not await self.test_connection():
-                self.ui.display_error("Cannot establish connection to API. Check your configuration.")
+            if not await self.ensure_server_connection():
+                self.ui.display_error("Cannot establish connection to API. Check your configuration and ensure your server is running.")
                 return 1
             
             # Layout mode disabled due to stability issues

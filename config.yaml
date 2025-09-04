@@ -7,7 +7,13 @@ api:
   max_tokens: 1024
   temperature: 0.7
   top_p: 0.95
-  timeout: 60.0
+  timeout: 180.0  # Increased to 3 minutes for more stability
+  max_retries: 5  # More retry attempts
+  retry_delay: 3.0  # Longer delay between retries
+  context_length: 26768  # Match your server's context length
+  context_buffer: 2048   # Reserved tokens for response generation
+  auto_trim_threshold: 0.85  # Auto-trim when 85% full
+  smart_trimming: true   # Enable intelligent message preservation
 
 ui:
   theme: "amethyst"  # Options: amethyst, infernal, stygian

@@ -6,13 +6,26 @@ A terminal-only CLI application that provides a **Claude Code-like interface** b
 
 ## ✨ Features
 
+### 🛡️ **Ultra-Stability System** ⭐ NEW!
+- **Auto-Restart**: Automatic server restart with VRAM clearing
+- **Connection Retry**: 5x retry attempts with exponential backoff  
+- **Health Monitoring**: Real-time connection health checks
+- **Error Recovery**: Smart recovery from 500 errors and timeouts
+- **Multi-GPU Support**: Optimized for dual GPU setups (RTX 5080 + RTX 3060)
+
+### 🧠 **Intelligent Context Management** ⭐ NEW!
+- **Smart Trimming**: Preserves important messages at 85% context usage
+- **Real-time Monitoring**: Color-coded warnings (Green/Yellow/Red)
+- **Accurate Tracking**: 26768 token context matching your server
+- **Context Commands**: `/context`, `/optimize`, `/trim smart`
+
 ### 🎨 **Mystical Theming System**
 - **Amethyst**: Deep purple mysticism (default)
 - **Infernal**: Red/amber flames of knowledge  
 - **Stygian**: Teal depths of ancient wisdom
 
 ### 🌊 **Streaming Response Display**
-- Real-time streaming text display
+- Real-time streaming text display with heartbeat monitoring
 - Animated loading messages with mystical flavor
 - Smooth, responsive terminal interface
 
@@ -39,7 +52,30 @@ A terminal-only CLI application that provides a **Claude Code-like interface** b
 
 ## 🚀 Quick Start
 
-### Installation
+**See `QUICKSTART.md` for the complete 2-minute setup guide!**
+
+### ⚡ **Ultra-Fast Launch**
+
+**Terminal 1: Start Server**
+```bash
+cd /home/k/Desktop/Demonology  
+./llama-server-nosudo.sh
+```
+
+**Terminal 2: Launch Demonology**
+```bash
+demonology
+```
+
+**That's it!** 🎉 You now have ultra-stable sessions with automatic restart and intelligent context management.
+
+### 📋 **Essential Commands**
+- `/help` - Show all commands
+- `/context` - Context usage with color warnings  
+- `/optimize` - Smart context optimization
+- `/restart` - Manual server restart + VRAM clear
+
+### Installation (for Development)
 
 ```bash
 # Clone the repository
@@ -51,9 +87,6 @@ pip install -r requirements.txt
 
 # Install Demonology
 pip install -e .
-
-# Or install directly from PyPI (when published)
-pip install demonology-cli
 ```
 
 ### Basic Usage

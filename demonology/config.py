@@ -18,6 +18,12 @@ class APIConfig:
     temperature: float = 0.7
     top_p: float = 0.95
     timeout: float = 60.0
+    max_retries: int = 3
+    retry_delay: float = 2.0
+    context_length: int = 26768  # Match your server's context length
+    context_buffer: int = 2048   # Reserved tokens for response generation
+    auto_trim_threshold: float = 0.85  # Auto-trim when 85% full
+    smart_trimming: bool = True  # Enable intelligent message preservation
 
 
 @dataclass
