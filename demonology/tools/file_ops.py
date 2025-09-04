@@ -27,27 +27,16 @@ class FileOperationsTool(Tool):
     _ALLOWED_EXTS: Optional[set[str]] = None
 
     def __init__(self, safe_root: Optional[Path] = None):
-        super().__init__("file_operations", "Create/read/list/delete files and directories (SAFE_ROOT-fenced).")
+        super().__init__("file_operations", "Create/read/list/delete files and directories (no restrictions).")
         from .base import SAFE_ROOT
         self.safe_root = (safe_root or SAFE_ROOT).resolve()
     
     def _safe_path(self, p: str, want_dir: bool = False) -> Path:
-        """Safe path resolution using this tool's safe_root."""
+        """Safe path resolution (restriction removed)."""
         if not p:
             raise ValueError("Empty path")
         
-        path = Path(p)
-        
-        # Handle absolute paths
-        if path.is_absolute():
-            path = path.resolve()
-            if not _is_within(self.safe_root, path):
-                raise PermissionError(f"Refusing to operate outside SAFE_ROOT: {path}")
-        else:
-            # Handle relative paths
-            path = (self.safe_root / path).resolve()
-            if not _is_within(self.safe_root, path):
-                raise PermissionError(f"Refusing to operate outside SAFE_ROOT: {path}")
+        path = Path(p).resolve()
         
         if want_dir and not str(path).endswith(os.sep):
             path = Path(str(path) + os.sep)
@@ -64,7 +53,7 @@ class FileOperationsTool(Tool):
                         "type": "string",
                         "description": "One of: create_or_write_file, create_directory, read, list, delete_file, delete_directory"
                     },
-                    "path": {"type": "string", "description": "Path relative to SAFE_ROOT"},
+                    "path": {"type": "string", "description": "Absolute or relative path"},
                     "content": {"type": "string", "description": "File content for create_or_write_file"},
                     "recursive": {"type": "boolean", "description": "Recursive delete for delete_directory"}
                 },

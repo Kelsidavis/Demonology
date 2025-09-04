@@ -8,6 +8,7 @@ import signal
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 import click
@@ -36,6 +37,8 @@ class DemonologyApp:
         self.conversation_history: List[Dict[str, Any]] = []
         self.running = False
         self._auto_tool_used_this_turn = False  # guard to avoid repeated fallback in one turn
+        self._tool_usage_stats = {}  # Track tool usage statistics
+        self._session_start_time = time.time()  # Track session duration
 
         safe_root = self._resolve_safe_root()
         logger.info(f"CLI resolved safe_root: {safe_root}")
@@ -172,52 +175,53 @@ class DemonologyApp:
         parts = command.split()
         cmd = parts[0] if parts else ""
 
-        if cmd in ['quit', 'exit', 'q']:
+        # Enhanced command aliases for better UX
+        if cmd in ['quit', 'exit', 'q', 'bye', 'goodbye']:
             return False
-        elif cmd == 'help':
+        elif cmd in ['help', 'h', '?']:
             self._show_help()
-        elif cmd == 'status':
+        elif cmd in ['status', 'stat', 's']:
             self.ui.display_status()
-        elif cmd == 'themes':
+        elif cmd in ['themes', 'theme-list']:
             self.ui.show_theme_preview()
-        elif cmd == 'theme':
+        elif cmd in ['theme', 't']:
             if len(parts) > 1:
                 self.ui.change_theme(parts[1])
             else:
                 self.ui.display_error("Usage: /theme <theme_name>")
-        elif cmd == 'permissive':
+        elif cmd in ['permissive', 'perm', 'p']:
             self._toggle_permissive_mode()
-        elif cmd == 'model':
+        elif cmd in ['model', 'm']:
             if len(parts) > 1:
                 self._change_model(' '.join(parts[1:]))
             else:
                 self.ui.display_info(f"Current model: {self.config.api.model}")
-        elif cmd == 'save':
+        elif cmd in ['save', 'sv']:
             if len(parts) > 1:
                 self._save_conversation(' '.join(parts[1:]))
             else:
                 self.ui.display_error("Usage: /save <filename>")
-        elif cmd == 'load':
+        elif cmd in ['load', 'ld']:
             if len(parts) > 1:
                 self._load_conversation(' '.join(parts[1:]))
             else:
                 self.ui.display_error("Usage: /load <filename>")
-        elif cmd == 'clear':
+        elif cmd in ['clear', 'cls', 'clean']:
             self._clear_conversation()
-        elif cmd == 'config':
+        elif cmd in ['config', 'cfg', 'conf']:
             if len(parts) > 1 and parts[1] == 'edit':
                 self._edit_config()
             else:
                 self._show_config()
-        elif cmd == 'debug':
+        elif cmd in ['debug', 'dbg']:
             self.ui.display_info("Debug command will be handled in next iteration")
-        elif cmd == 'restart':
+        elif cmd in ['restart', 'rs', 'reset']:
             asyncio.create_task(self._manual_server_restart())
-        elif cmd == 'tools':
+        elif cmd in ['tools', 'tl']:
             self._show_tools()
-        elif cmd == 'context' or cmd == 'ctx':
+        elif cmd in ['context', 'ctx', 'c']:
             self._show_context_stats()
-        elif cmd == 'trim':
+        elif cmd in ['trim', 'tr']:
             parts = user_input.split()
             if len(parts) > 1 and parts[1] == 'smart':
                 # Force smart trimming
@@ -227,7 +231,7 @@ class DemonologyApp:
             else:
                 keep_count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 10
                 self._trim_conversation_history(keep_count)
-        elif cmd == 'optimize':
+        elif cmd in ['optimize', 'opt', 'o']:
             # Optimize context using smart trimming
             stats = self._get_context_stats()
             if stats['context_usage_percent'] < 50:
@@ -239,6 +243,29 @@ class DemonologyApp:
                     self.ui.display_success(f"✅ Context optimized: {stats['context_usage_percent']:.1f}% → {new_stats['context_usage_percent']:.1f}%")
                 else:
                     self.ui.display_info("Context is already optimally sized.")
+        elif cmd in ['autocontinue', 'auto', 'ac']:
+            if len(parts) > 1:
+                if parts[1] == 'on':
+                    self.config.ui.auto_continue_enabled = True
+                    self.config.save()
+                    self.ui.display_success(f"✅ Auto-continue enabled (timeout: {self.config.ui.auto_continue_timeout}s)")
+                elif parts[1] == 'off':
+                    self.config.ui.auto_continue_enabled = False
+                    self.config.save()
+                    self.ui.display_success("✅ Auto-continue disabled")
+                elif parts[1].replace('.', '').isdigit():
+                    timeout = float(parts[1])
+                    if 10 <= timeout <= 300:  # Between 10 seconds and 5 minutes
+                        self.config.ui.auto_continue_timeout = timeout
+                        self.config.save()
+                        self.ui.display_success(f"✅ Auto-continue timeout set to {timeout}s")
+                    else:
+                        self.ui.display_error("Timeout must be between 10 and 300 seconds")
+                else:
+                    self.ui.display_error("Usage: /autocontinue <on|off|timeout_seconds>")
+            else:
+                status = "enabled" if self.config.ui.auto_continue_enabled else "disabled"
+                self.ui.display_info(f"Auto-continue: {status} (timeout: {self.config.ui.auto_continue_timeout}s)")
         else:
             self.ui.display_error(f"Unknown command: /{cmd}. Type /help for available commands.")
 
@@ -248,27 +275,33 @@ class DemonologyApp:
         self.ui.console.print("""
 [bold]Demonology Commands:[/bold]
 
-/help                 Show this help message
-/quit, /exit, /q      Exit Demonology
-/status               Show current status
+/help, /h, /?         Show this help message
+/quit, /q, /bye       Exit Demonology
+/status, /s           Show current status
 /themes               List available themes
-/theme <name>         Change theme (amethyst, infernal, stygian)
-/permissive           Toggle permissive mode
-/model <name>         Change or show current model
-/save <filename>      Save conversation to file
-/load <filename>      Load conversation from file
-/clear                Clear conversation history
-/config               Show current configuration
+/theme, /t <name>     Change theme (amethyst, infernal, stygian)
+/permissive, /p       Toggle permissive mode
+/model, /m <name>     Change or show current model
+/save, /sv <file>     Save conversation to file
+/load, /ld <file>     Load conversation from file
+/clear, /cls          Clear conversation history
+/config, /cfg         Show current configuration
 /config edit          Edit configuration file
-/debug                Debug API response
-/restart              Restart llama server and clear VRAM
-/tools                List available tools
+/debug, /dbg          Debug API response
+/restart, /rs         Restart llama server and clear VRAM
+/tools, /tl           List available tools
 
 [bold]Context Management:[/bold]
-/context, /ctx        Show context usage statistics
-/trim [number]        Keep only recent messages (default: 10)
+/context, /ctx, /c    Show context usage statistics
+/trim, /tr [number]   Keep only recent messages (default: 10)
 /trim smart           Intelligent context optimization
-/optimize             Auto-optimize context usage
+/optimize, /opt, /o   Auto-optimize context usage
+
+[bold]Auto-Continue:[/bold]
+/autocontinue, /ac    Show auto-continue status
+/auto on              Enable auto-continue (resumes work after timeout)
+/auto off             Disable auto-continue
+/auto <seconds>       Set timeout (10-300 seconds, default: 60)
 
 [bold]Command History:[/bold]
 /history              Show recent command history
@@ -1015,6 +1048,73 @@ Config file: {cfg.config_path}
         followup_stream = self.client.stream_chat_completion(self.conversation_history, tools=tools)
         return await self._handle_streaming_response(followup_stream)
 
+    def _generate_auto_continue_prompt(self) -> str:
+        """Generate an intelligent auto-continue prompt based on conversation context."""
+        if not self.conversation_history:
+            return "Please continue with our conversation."
+            
+        # Get recent context (last few messages)
+        recent_messages = self.conversation_history[-3:]
+        
+        # Analyze what the user was working on
+        work_indicators = {
+            'project': ['build', 'create', 'project', 'implement', 'develop', 'code'],
+            'search': ['search', 'find', 'look', 'research', 'information'],
+            'analysis': ['analyze', 'examine', 'review', 'check', 'investigate'],
+            'file_work': ['file', 'edit', 'write', 'modify', 'update'],
+            'problem_solving': ['fix', 'debug', 'solve', 'issue', 'error', 'problem']
+        }
+        
+        context_type = 'general'
+        last_user_message = ""
+        
+        # Find the last user message
+        for msg in reversed(recent_messages):
+            if msg.get('role') == 'user':
+                last_user_message = msg.get('content', '').lower()
+                break
+        
+        # Determine context type
+        for work_type, keywords in work_indicators.items():
+            if any(keyword in last_user_message for keyword in keywords):
+                context_type = work_type
+                break
+        
+        # Generate context-appropriate continuation prompts
+        prompts = {
+            'project': "Please continue working on the project. What's the next step?",
+            'search': "Please continue with the search or provide more information on this topic.",
+            'analysis': "Please continue your analysis or provide additional insights.",
+            'file_work': "Please continue with the file operations or show me what to do next.",
+            'problem_solving': "Please continue troubleshooting or suggest the next solution step.",
+            'general': "Please continue where we left off."
+        }
+        
+        return prompts.get(context_type, prompts['general'])
+    
+    async def _get_input_with_timeout(self, timeout: float) -> Optional[str]:
+        """Get user input with timeout. Returns None if timeout occurs."""
+        try:
+            # Create a task for getting input
+            def get_input():
+                try:
+                    return input()
+                except EOFError:
+                    return None
+                    
+            # Run input in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            input_task = loop.run_in_executor(None, get_input)
+            
+            # Wait with timeout
+            result = await asyncio.wait_for(input_task, timeout=timeout)
+            return result
+            
+        except asyncio.TimeoutError:
+            return None
+        except Exception:
+            return None
+
     async def chat_loop(self):
         self.running = True
         signal.signal(signal.SIGINT, self.handle_signal)
@@ -1022,17 +1122,40 @@ Config file: {cfg.config_path}
 
         while self.running:
             try:
+                # Get initial user input
                 user_input = self.ui.get_user_input()
 
-                # --- Debounce empty input: don't re-render the panel on blanks ---
+                # Handle timeout-based auto-continue
+                auto_continued = False
+                
+                # --- Input handling with timeout and auto-continue ---
                 while not user_input.strip():
                     try:
                         sys.stdout.write("◆ ")
                         sys.stdout.flush()
-                        user_input = input()
+                        
+                        # Use timeout-based input if auto-continue is enabled
+                        if self.config.ui.auto_continue_enabled and self.conversation_history:
+                            timeout_input = await self._get_input_with_timeout(self.config.ui.auto_continue_timeout)
+                            
+                            if timeout_input is None:
+                                # Timeout occurred - auto-continue
+                                auto_continue_prompt = self._generate_auto_continue_prompt()
+                                self.ui.console.print(f"\n[dim yellow]⏰ Auto-continuing after {self.config.ui.auto_continue_timeout}s timeout...[/dim yellow]")
+                                self.ui.console.print(f"[dim]Auto-prompt: {auto_continue_prompt}[/dim]\n")
+                                user_input = auto_continue_prompt
+                                auto_continued = True
+                                break
+                            else:
+                                user_input = timeout_input or ""
+                        else:
+                            # Standard input without timeout
+                            user_input = input()
+                            
                     except EOFError:
                         self.running = False
                         break
+                        
                 if not self.running:
                     break
                 # ---------------------------------------------------------------
@@ -1040,10 +1163,12 @@ Config file: {cfg.config_path}
                 # new user turn → reset auto-tool guard
                 self._auto_tool_used_this_turn = False
 
-                if not self.process_command(user_input):
-                    break
-                if user_input.startswith('/'):
-                    continue
+                # Process commands unless this is an auto-continue
+                if not auto_continued:
+                    if not self.process_command(user_input):
+                        break
+                    if user_input.startswith('/'):
+                        continue
 
 # Context management now handled by _auto_manage_context()
                 

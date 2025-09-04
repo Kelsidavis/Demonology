@@ -33,6 +33,8 @@ class UIConfig:
     permissive_mode: bool = False
     auto_save_conversations: bool = True
     max_history_length: int = 1000
+    auto_continue_enabled: bool = True  # Auto-continue after timeout
+    auto_continue_timeout: float = 60.0  # Timeout in seconds (60s default)
 
 
 @dataclass
