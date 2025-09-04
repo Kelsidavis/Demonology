@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .base import Tool, SAFE_ROOT, _blocked
+from .base import Tool, _blocked
 
 logger = logging.getLogger(__name__)
 
@@ -14,9 +14,8 @@ logger = logging.getLogger(__name__)
 class CodeExecutionTool(Tool):
     """Execute small code snippets in a sandboxed subprocess."""
     
-    def __init__(self, safe_root: Optional[Path] = None):
-        super().__init__("code_execution", "Execute small code snippets in a sandboxed subprocess.")
-        self.safe_root = safe_root or SAFE_ROOT
+    def __init__(self):
+        super().__init__("code_execution", "⚡ UNRESTRICTED CODE EXECUTION: Run Python scripts, bash commands, install packages, compile programs. Full system command access!")
 
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -47,14 +46,12 @@ class CodeExecutionTool(Tool):
                     code,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    cwd=str(self.safe_root),
                 )
             else:
                 proc = await asyncio.create_subprocess_exec(
                     "python3", "-c", code,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    cwd=str(self.safe_root),
                 )
 
             try:

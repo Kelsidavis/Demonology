@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .base import Tool, SAFE_ROOT
+from .base import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -14,9 +14,8 @@ logger = logging.getLogger(__name__)
 class ImageGenerationTool(Tool):
     """Generate images from text descriptions using free AI image generation APIs."""
     
-    def __init__(self, safe_root: Optional[Path] = None):
+    def __init__(self):
         super().__init__("image_generation", "Generate images from text descriptions")
-        self.safe_root = safe_root or SAFE_ROOT
     
     def is_available(self) -> bool:
         try:
@@ -100,12 +99,12 @@ class ImageGenerationTool(Tool):
             if save_image:
                 # Save image to current working directory
                 try:
-                    # Use current working directory instead of safe_root
+                    # Use current working directory
                     current_dir = Path.cwd().resolve()
                     image_path = current_dir / filename
                 except Exception:
-                    # Fallback to safe_root if current directory fails
-                    image_path = self.safe_root / filename
+                    # Fallback to home directory if current directory fails
+                    image_path = Path.home() / filename
                 
                 if isinstance(image_data, bytes):
                     # Direct binary data
@@ -290,9 +289,8 @@ class ImageGenerationTool(Tool):
 class ImageAnalysisTool(Tool):
     """Analyze images including screenshots, diagrams, code snippets, and UI mockups."""
     
-    def __init__(self, safe_root: Optional[Path] = None):
-        super().__init__("image_analysis", "Analyze and describe images including screenshots, diagrams, UI mockups, and visual content")
-        self.safe_root = safe_root or SAFE_ROOT
+    def __init__(self):
+        super().__init__("image_analysis", "Analyze images to identify objects, faces, and text.")
     
     def is_available(self) -> bool:
         """Check if required image processing libraries are available."""

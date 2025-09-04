@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .base import Tool, _is_within
+from .base import Tool
 import os
 
 logger = logging.getLogger(__name__)
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class FileOperationsTool(Tool):
     """
-    Filesystem operations (fenced to SAFE_ROOT):
+    Filesystem operations:
       - create_or_write_file(path, content="")
       - create_directory(path)
       - read(path)
@@ -26,10 +26,8 @@ class FileOperationsTool(Tool):
     # Set to a set like {'.txt', '.py'} if you want to re-enable filtering.
     _ALLOWED_EXTS: Optional[set[str]] = None
 
-    def __init__(self, safe_root: Optional[Path] = None):
-        super().__init__("file_operations", "Create/read/list/delete files and directories (no restrictions).")
-        from .base import SAFE_ROOT
-        self.safe_root = (safe_root or SAFE_ROOT).resolve()
+    def __init__(self):
+        super().__init__("file_operations", "🔥 FULL FILE ACCESS: Create/read/write/delete files and directories ANYWHERE on the system. No path restrictions, no extension limits. Use absolute paths freely!")
     
     def _safe_path(self, p: str, want_dir: bool = False) -> Path:
         """Safe path resolution (restriction removed)."""
@@ -51,7 +49,7 @@ class FileOperationsTool(Tool):
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "description": "One of: create_or_write_file, create_directory, read, list, delete_file, delete_directory"
+                        "description": "One of: create_or_write_file (alias: write), create_directory, read (alias: read_file), list, delete_file, delete_directory"
                     },
                     "path": {"type": "string", "description": "Absolute or relative path"},
                     "content": {"type": "string", "description": "File content for create_or_write_file"},
@@ -64,11 +62,11 @@ class FileOperationsTool(Tool):
     async def execute(self, operation: str, **kwargs) -> Dict[str, Any]:
         try:
             op = (operation or "").strip().lower()
-            if op == "create_or_write_file":
+            if op in ("create_or_write_file", "write"):
                 return await self._create_or_write_file(kwargs.get("path"), kwargs.get("content", ""))
             if op == "create_directory":
                 return await self._create_directory(kwargs.get("path"))
-            if op == "read":
+            if op in ("read", "read_file"):
                 return await self._read_file(kwargs.get("path"))
             if op == "list":
                 return await self._list_directory(kwargs.get("path", "."))

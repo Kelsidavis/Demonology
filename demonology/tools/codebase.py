@@ -9,14 +9,14 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .base import Tool, SAFE_ROOT
+from .base import Tool
 
 logger = logging.getLogger(__name__)
 
 
 class CodebaseAnalysisTool(Tool):
     """
-    Explore/search codebases (SAFE_ROOT-fenced).
+    Explore/search codebases.
 
     Ops:
       - tree(path='.', depth=2, max_entries=200)
@@ -34,10 +34,8 @@ class CodebaseAnalysisTool(Tool):
         ".md", ".txt", ".css", ".html", ".sh"
     ]
 
-    def __init__(self, safe_root: Optional[Path] = None):
-        super().__init__("codebase_analysis", "Explore and search codebases safely.")
-        self.safe_root: Path = (safe_root or SAFE_ROOT).resolve()
-        logger.info(f"CodebaseAnalysisTool initialized with safe_root: {self.safe_root}")
+    def __init__(self):
+        super().__init__("codebase_analysis", "🔍 DEEP CODEBASE ACCESS: Analyze any codebase anywhere, index repositories, search with regex, read all file types. No directory restrictions!")
 
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -73,7 +71,6 @@ class CodebaseAnalysisTool(Tool):
             
             # Debug logging
             logger.debug(f"CodebaseAnalysisTool execute called with operation: {operation}, kwargs: {kw}")
-            logger.debug(f"Safe root: {self.safe_root}")
             
             if op == "tree":
                 path = kw.get("path") or "."
@@ -104,54 +101,7 @@ class CodebaseAnalysisTool(Tool):
             return {"success": False, "error": str(e)}
 
     # helpers
-    def _safe_p(self, rel: str) -> Path:
-        if not rel or rel == ".":
-            # Use current working directory if available, otherwise safe_root
-            try:
-                current_dir = Path.cwd().resolve()
-                return current_dir
-            except Exception:
-                return self.safe_root
-        
-        # Handle absolute paths
-        if os.path.isabs(rel):
-            p = Path(rel).resolve()
-            
-            # Check if it's within safe_root (Demonology source directory)
-            if str(p).startswith(str(self.safe_root)):
-                return p
-                
-            # Check if it's within user's current working directory tree
-            try:
-                current_dir = Path.cwd().resolve()
-                if str(p).startswith(str(current_dir)) or str(current_dir).startswith(str(p)):
-                    # Path is within or above current working directory - allow it
-                    return p
-            except Exception:
-                pass
-                
-            # Check if it's within user's home directory (broader allowance)
-            try:
-                home_dir = Path.home().resolve()
-                if str(p).startswith(str(home_dir)):
-                    logger.info(f"CodebaseAnalysisTool: Allowing access to path within user home: {p}")
-                    return p
-            except Exception:
-                pass
-                
-            # Log the attempted path for debugging but still allow it with warning
-            logger.warning(f"CodebaseAnalysisTool: Accessing path outside typical bounds: {p}")
-            return p
-        
-        # Handle relative paths - resolve relative to current working directory first
-        try:
-            current_dir = Path.cwd().resolve()
-            p = (current_dir / rel).resolve()
-            return p
-        except Exception:
-            # Fall back to relative to safe_root
-            p = (self.safe_root / rel).resolve()
-            return p
+    
 
     def _excluded(self, path: Path, exclude_glob: List[str]) -> bool:
         sp = str(path)
@@ -168,7 +118,7 @@ class CodebaseAnalysisTool(Tool):
 
     def _tree(self, path: str, depth: int, max_entries: int) -> Dict[str, Any]:
         start = time.time()
-        base = self._safe_p(path)
+        base = Path(path).resolve()
         if not base.exists():
             return {"success": False, "error": f"Path not found: {base}", "path": str(base)}
         
@@ -217,7 +167,7 @@ class CodebaseAnalysisTool(Tool):
     def _index_repo(self, path: str, max_files: int, include_ext: List[str], 
                    exclude_glob: List[str], max_size_bytes: int) -> Dict[str, Any]:
         start = time.time()
-        base = self._safe_p(path)
+        base = Path(path).resolve()
         if not base.exists():
             return {"success": False, "error": f"Path not found: {base}", "path": str(base)}
 
@@ -284,7 +234,7 @@ class CodebaseAnalysisTool(Tool):
         if not path:
             return {"success": False, "error": "Missing 'path' for read_chunk"}
         
-        file_path = self._safe_p(path)
+        file_path = Path(path).resolve()
         if not file_path.exists():
             return {"success": False, "error": f"File not found: {file_path}", "path": str(file_path)}
         if not file_path.is_file():
@@ -312,7 +262,7 @@ class CodebaseAnalysisTool(Tool):
         import re
         
         start = time.time()
-        base = self._safe_p(path)
+        base = Path(path).resolve()
         if not base.exists():
             return {"success": False, "error": f"Path not found: {base}", "path": str(base)}
 

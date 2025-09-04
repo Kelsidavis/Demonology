@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .base import Tool, _safe_path
+from .base import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +18,8 @@ logger = logging.getLogger(__name__)
 class WaveformGeneratorTool(Tool):
     """Generate basic waveforms (sine, square, sawtooth, triangle)."""
     
-    def __init__(self, safe_root: Optional[Path] = None):
+    def __init__(self):
         super().__init__("waveform_generator", "Generate basic audio waveforms and save as WAV files.")
-        from .base import SAFE_ROOT
-        self.safe_root = safe_root or SAFE_ROOT
     
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -108,7 +106,7 @@ class WaveformGeneratorTool(Tool):
             samples_int = (samples * 32767).astype(np.int16)
             
             # Save to WAV file
-            output_path = _safe_path(output_file)
+            output_path = Path(output_file).resolve()
             output_path.parent.mkdir(parents=True, exist_ok=True)
             
             with wave.open(str(output_path), 'w') as wav_file:
@@ -137,10 +135,8 @@ class WaveformGeneratorTool(Tool):
 class SynthesizerTool(Tool):
     """Advanced synthesis including FM, AM, and subtractive synthesis."""
     
-    def __init__(self, safe_root: Optional[Path] = None):
+    def __init__(self):
         super().__init__("synthesizer", "Advanced audio synthesis with FM, AM, and filtering.")
-        from .base import SAFE_ROOT
-        self.safe_root = safe_root or SAFE_ROOT
     
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -278,7 +274,7 @@ class SynthesizerTool(Tool):
             samples_int = (samples * 32767).astype(np.int16)
             
             # Save to WAV file
-            output_path = _safe_path(output_file)
+            output_path = Path(output_file).resolve()
             output_path.parent.mkdir(parents=True, exist_ok=True)
             
             with wave.open(str(output_path), 'w') as wav_file:
@@ -346,10 +342,8 @@ class SynthesizerTool(Tool):
 class AudioAnalysisTool(Tool):
     """Analyze audio files with FFT, spectrograms, and feature extraction."""
     
-    def __init__(self, safe_root: Optional[Path] = None):
+    def __init__(self):
         super().__init__("audio_analysis", "Analyze audio files and extract features.")
-        from .base import SAFE_ROOT
-        self.safe_root = safe_root or SAFE_ROOT
     
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -409,7 +403,7 @@ class AudioAnalysisTool(Tool):
         
         try:
             # Load audio file
-            audio_path = _safe_path(audio_file)
+            audio_path = Path(audio_file).resolve()
             if not audio_path.exists():
                 return {"success": False, "error": f"Audio file not found: {audio_file}"}
             
@@ -582,7 +576,7 @@ class AudioAnalysisTool(Tool):
         
         plt.tight_layout()
         
-        plot_path = _safe_path(f"{filename_base}_spectrum.png")
+        plot_path = Path(f"{filename_base}_spectrum.png").resolve()
         plt.savefig(str(plot_path), dpi=150, bbox_inches='tight')
         plt.close()
         
@@ -606,7 +600,7 @@ class AudioAnalysisTool(Tool):
         plt.ylabel('Frequency (Hz)')
         plt.title('Spectrogram')
         
-        plot_path = _safe_path(f"{filename_base}_spectrogram.png")
+        plot_path = Path(f"{filename_base}_spectrogram.png").resolve()
         plt.savefig(str(plot_path), dpi=150, bbox_inches='tight')
         plt.close()
         
@@ -616,10 +610,8 @@ class AudioAnalysisTool(Tool):
 class MIDITool(Tool):
     """MIDI file generation and parsing."""
     
-    def __init__(self, safe_root: Optional[Path] = None):
+    def __init__(self):
         super().__init__("midi_tool", "Generate and parse MIDI files.")
-        from .base import SAFE_ROOT
-        self.safe_root = safe_root or SAFE_ROOT
     
     def to_openai_function(self) -> Dict[str, Any]:
         return {

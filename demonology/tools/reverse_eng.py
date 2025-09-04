@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .base import Tool, _safe_path, _blocked
+from .base import Tool, _blocked
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +17,8 @@ logger = logging.getLogger(__name__)
 class DisassemblerTool(Tool):
     """Disassemble binaries using objdump, radare2, or other tools."""
     
-    def __init__(self, safe_root: Optional[Path] = None):
+    def __init__(self):
         super().__init__("disassembler", "Disassemble binary files using various disassemblers.")
-        from .base import SAFE_ROOT
-        self.safe_root = safe_root or SAFE_ROOT
     
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -73,7 +71,7 @@ class DisassemblerTool(Tool):
                      **_) -> Dict[str, Any]:
         try:
             # Validate binary path
-            binary_file = _safe_path(binary_path)
+            binary_file = Path(binary_path).resolve()
             if not binary_file.exists():
                 return {"success": False, "error": f"Binary file not found: {binary_path}"}
             
@@ -173,10 +171,8 @@ class DisassemblerTool(Tool):
 class HexEditorTool(Tool):
     """Programmatic hex editing and analysis."""
     
-    def __init__(self, safe_root: Optional[Path] = None):
+    def __init__(self):
         super().__init__("hex_editor", "Hex dump, search, and edit binary files.")
-        from .base import SAFE_ROOT
-        self.safe_root = safe_root or SAFE_ROOT
     
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -223,7 +219,7 @@ class HexEditorTool(Tool):
                      search_pattern: Optional[str] = None,
                      patch_data: Optional[str] = None, **_) -> Dict[str, Any]:
         try:
-            target_file = _safe_path(file_path)
+            target_file = Path(file_path).resolve()
             if not target_file.exists():
                 return {"success": False, "error": f"File not found: {file_path}"}
             
@@ -361,10 +357,8 @@ class HexEditorTool(Tool):
 class PatternSearchTool(Tool):
     """Search for patterns, signatures, and strings in binaries."""
     
-    def __init__(self, safe_root: Optional[Path] = None):
+    def __init__(self):
         super().__init__("pattern_search", "Search for patterns, strings, and signatures in binary files.")
-        from .base import SAFE_ROOT
-        self.safe_root = safe_root or SAFE_ROOT
     
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -407,7 +401,7 @@ class PatternSearchTool(Tool):
                      pattern: Optional[str] = None, min_length: int = 4,
                      encoding: str = "both", **_) -> Dict[str, Any]:
         try:
-            target_file = _safe_path(file_path)
+            target_file = Path(file_path).resolve()
             if not target_file.exists():
                 return {"success": False, "error": f"File not found: {file_path}"}
             
@@ -595,10 +589,8 @@ class PatternSearchTool(Tool):
 class DebuggingTool(Tool):
     """GDB integration for dynamic analysis."""
     
-    def __init__(self, safe_root: Optional[Path] = None):
+    def __init__(self):
         super().__init__("debugger", "Debug binaries using GDB with scripting support.")
-        from .base import SAFE_ROOT
-        self.safe_root = safe_root or SAFE_ROOT
     
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -650,7 +642,7 @@ class DebuggingTool(Tool):
             if not self.is_available():
                 return {"success": False, "error": "GDB not found"}
             
-            binary_file = _safe_path(binary_path)
+            binary_file = Path(binary_path).resolve()
             if not binary_file.exists():
                 return {"success": False, "error": f"Binary file not found: {binary_path}"}
             
@@ -786,10 +778,8 @@ class DebuggingTool(Tool):
 class GhidraAnalysisTool(Tool):
     """Perform headless binary analysis using Ghidra."""
     
-    def __init__(self, safe_root: Optional[Path] = None):
+    def __init__(self):
         super().__init__("ghidra_analysis", "Perform headless binary analysis using Ghidra.")
-        from .base import SAFE_ROOT
-        self.safe_root = safe_root or SAFE_ROOT
     
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -890,7 +880,7 @@ class GhidraAnalysisTool(Tool):
                 }
             
             # Validate binary path
-            binary_file = _safe_path(binary_path)
+            binary_file = Path(binary_path).resolve()
             if not binary_file.exists():
                 return {"success": False, "error": f"Binary file not found: {binary_path}"}
             
@@ -920,7 +910,7 @@ class GhidraAnalysisTool(Tool):
                 
                 # Add custom script if provided
                 if script_path:
-                    script_file = _safe_path(script_path)
+                    script_file = Path(script_path).resolve()
                     if script_file.exists():
                         cmd.extend(["-postScript", str(script_file)])
                 
@@ -943,8 +933,7 @@ class GhidraAnalysisTool(Tool):
                 process = await asyncio.create_subprocess_exec(
                     *cmd,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=str(self.safe_root)
+                    stderr=asyncio.subprocess.PIPE
                 )
                 
                 try:

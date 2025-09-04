@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .base import Tool, SAFE_ROOT, _safe_path
+from .base import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -14,10 +14,8 @@ logger = logging.getLogger(__name__)
 class ProjectPlanningTool(Tool):
     """Analyze existing projects or generate new project plans and task breakdowns for development projects."""
     
-    def __init__(self, safe_root: Optional[Path] = None):
+    def __init__(self):
         super().__init__("project_planning", "Analyze existing projects and continue work, or generate new project plans and task breakdowns")
-        self.safe_root = safe_root or SAFE_ROOT
-        # Debug logging removed for cleaner output
     
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -97,7 +95,7 @@ class ProjectPlanningTool(Tool):
                 try:
                     search_dir = Path.cwd().resolve()
                 except Exception:
-                    search_dir = self.safe_root
+                    search_dir = Path.cwd().resolve()
                 
                 # Look for exact match
                 potential_path = search_dir / project_name.replace(' ', '_').lower()
@@ -114,10 +112,8 @@ class ProjectPlanningTool(Tool):
                 try:
                     current_dir = Path.cwd().resolve()
                     search_locations = [str(current_dir)]
-                    if current_dir != self.safe_root:
-                        search_locations.append(str(self.safe_root))
                 except Exception:
-                    search_locations = [str(self.safe_root)]
+                    search_locations = [str(Path.cwd().resolve())]
                     
                 return {
                     "success": True,
@@ -205,13 +201,13 @@ class ProjectPlanningTool(Tool):
             # Save to project plan file in the current working directory
             plan_filename = f"{project_name.replace(' ', '_').lower()}_plan.md"
             
-            # Always save in current working directory, not safe_root
+            # Always save in current working directory
             try:
                 current_dir = Path.cwd().resolve()
                 plan_file = current_dir / plan_filename
             except Exception:
-                # If we can't get current directory, use safe_root as fallback
-                plan_file = self.safe_root / plan_filename
+                # If we can't get current directory, use home directory as fallback
+                plan_file = Path.home() / plan_filename
             
             plan_file.write_text(plan, encoding="utf-8")
             result["file_saved"] = str(plan_file)
@@ -605,7 +601,7 @@ Based on the technology stack, you may need:
         # Clean up project name for directory use
         clean_name = project_name.replace(' ', '_').lower()
         
-        # Create project in current working directory, not safe_root
+        # Create project in current working directory
         try:
             current_dir = Path.cwd().resolve()
             
@@ -617,14 +613,14 @@ Based on the technology stack, you may need:
                 project_dir = current_dir / clean_name
                 
         except Exception:
-            # If we can't get current directory, fall back to safe_root
+            # If we can't get current directory, fall back to home directory
             if "/" in project_name or "\\" in project_name:
                 try:
-                    project_dir = _safe_path(project_name, want_dir=True)
+                    project_dir = Path(project_name).resolve()
                 except (PermissionError, ValueError):
-                    project_dir = self.safe_root / clean_name
+                    project_dir = Path.home() / clean_name
             else:
-                project_dir = self.safe_root / clean_name
+                project_dir = Path.home() / clean_name
         
         # Create project directory
         project_dir.mkdir(parents=True, exist_ok=True)
