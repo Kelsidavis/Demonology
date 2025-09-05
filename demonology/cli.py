@@ -1225,7 +1225,7 @@ Config file: {cfg.config_path}
                     self._log_structured_error("tool_result_failed", error_msg, {
                         "tool_name": function_name,
                         "tool_arguments": arguments,
-                        "call_id": call_id,
+                        "call_id": tool_id,
                         "result": result
                     })
 

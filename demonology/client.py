@@ -418,10 +418,11 @@ class DemonologyClient:
         """
         # Enhanced repetition detection for autonomous coding reliability
         repetition_buffer = []
-        repetition_threshold = 3  # Reduced from 5 - catch loops faster
-        max_chunk_length = 500    # Reduced from 1000 - catch sooner
+        repetition_threshold = 5  # Increased back to 5 - be less aggressive
+        max_chunk_length = 1000   # Increased back to 1000 - allow longer responses
         pattern_buffer = []       # Track patterns, not just identical chunks
         similarity_threshold = 0.8  # Detect similar (not just identical) content
+        min_content_length = 5    # Minimum content length to check for repetition
         url = f"{self.base_url}/chat/completions"
         payload = self._build_request_payload(messages, stream=True, tools=tools, **kwargs)
         
@@ -479,22 +480,24 @@ class DemonologyClient:
                                                     logger.error(f"Detected extremely long chunk ({len(content)} chars), likely repetitive generation")
                                                     break
                                                 
-                                                # Track recent content for repetition detection
-                                                repetition_buffer.append(content)
-                                                if len(repetition_buffer) > repetition_threshold:
-                                                    repetition_buffer.pop(0)
-                                                
-                                                # Enhanced repetition detection
-                                                if len(repetition_buffer) >= repetition_threshold:
-                                                    # Check for exact repetition
-                                                    if len(set(repetition_buffer)) == 1:
-                                                        logger.error(f"CRITICAL: Exact repetition loop detected - '{repetition_buffer[0][:50]}...'")
-                                                        break
+                                                # Only track chunks with meaningful content for repetition detection
+                                                if len(content.strip()) >= min_content_length:
+                                                    # Track recent content for repetition detection
+                                                    repetition_buffer.append(content.strip())
+                                                    if len(repetition_buffer) > repetition_threshold:
+                                                        repetition_buffer.pop(0)
                                                     
-                                                    # Check for pattern repetition (similar content)
-                                                    if self._detect_similar_patterns(repetition_buffer, similarity_threshold):
-                                                        logger.error(f"CRITICAL: Pattern repetition loop detected in last {repetition_threshold} chunks")
-                                                        break
+                                                    # Enhanced repetition detection (only for meaningful content)
+                                                    if len(repetition_buffer) >= repetition_threshold:
+                                                        # Check for exact repetition
+                                                        if len(set(repetition_buffer)) == 1:
+                                                            logger.error(f"CRITICAL: Exact repetition loop detected - '{repetition_buffer[0][:50]}...'")
+                                                            break
+                                                        
+                                                        # Check for pattern repetition (similar content)
+                                                        if self._detect_similar_patterns(repetition_buffer, similarity_threshold):
+                                                            logger.error(f"CRITICAL: Pattern repetition loop detected in last {repetition_threshold} chunks")
+                                                            break
                                             
                                             yield preprocessed_delta
                                             
