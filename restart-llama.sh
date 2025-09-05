@@ -14,10 +14,10 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     sleep 2
 fi
 
-# Start server in background (using no-sudo version)
+# Start server in background (using q8_0 extended context version)
 echo "🚀 Starting server..."
 cd /home/k/Desktop/Demonology
-nohup ./llama-server-nosudo.sh > /tmp/llama-server.log 2>&1 &
+nohup ./llama-server-q8-extended.sh > /tmp/llama-server.log 2>&1 &
 
 echo "✅ Server restart initiated"
 echo "📄 Log file: /tmp/llama-server.log"

@@ -206,11 +206,61 @@ class ToolRegistry:
             payload.append({"type": "function", "function": t.to_openai_function()})
         return payload
 
+    def _get_tool_alias_suggestions(self, invalid_name: str) -> List[str]:
+        """Get suggestions for invalid tool names using common typos and aliases."""
+        tool_aliases = {
+            # Common typos
+            "files": "file_operations",
+            "file": "file_operations", 
+            "search": "web_search",
+            "websearch": "web_search",
+            "web": "web_search",
+            "reddit": "reddit_search",
+            "generate": "image_generation",
+            "img": "image_generation",
+            "image": "image_generation",
+            "audio": "audio_tools",
+            "sound": "audio_tools",
+            "execute": "execution",
+            "run": "execution",
+            "exec": "execution",
+            "shell": "execution",
+            "bash": "execution",
+            "terminal": "execution",
+            "code": "codebase_tools",
+            "git": "codebase_tools",
+            "proj": "project_tools",
+            "project": "project_tools",
+            "reverse": "reverse_engineering",
+            "disasm": "reverse_engineering",
+        }
+        
+        # Check direct aliases
+        if invalid_name.lower() in tool_aliases:
+            return [tool_aliases[invalid_name.lower()]]
+        
+        # Fuzzy matching with available tools
+        available_tools = list(self.tools.keys())
+        suggestions = []
+        for tool_name in available_tools:
+            if invalid_name.lower() in tool_name.lower() or tool_name.lower() in invalid_name.lower():
+                suggestions.append(tool_name)
+        
+        return suggestions[:3]  # Return top 3 suggestions
+
     async def execute_tool(self, tool_name: str, **kwargs) -> Dict[str, Any]:
-        """Execute a tool with backward compatibility for legacy parameter handling."""
+        """Execute a tool with backward compatibility and alias guard."""
         tool = self.get_tool(tool_name)
         if not tool:
-            return {"success": False, "error": f"Tool not found: {tool_name}"}
+            # Tool alias guard - provide helpful suggestions
+            suggestions = self._get_tool_alias_suggestions(tool_name)
+            if suggestions:
+                suggestion_list = ", ".join(suggestions)
+                return {"success": False, "error": f"Tool not found: {tool_name}. Did you mean: {suggestion_list}"}
+            else:
+                available_tools = ", ".join(list(self.tools.keys())[:10])  # Show first 10
+                return {"success": False, "error": f"Tool not found: {tool_name}. Available tools: {available_tools}"}
+        
         if not tool.enabled:
             return {"success": False, "error": f"Tool is disabled: {tool_name}"}
         if not tool.is_available():

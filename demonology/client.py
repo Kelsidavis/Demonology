@@ -96,12 +96,15 @@ class DemonologyClient:
         **kwargs
     ) -> Dict[str, Any]:
         """Build the request payload for the API."""
-        # Apply anti-repetition settings if specified
+        # Apply enhanced anti-repetition settings
         temperature = kwargs.get("temperature", self.temperature)
         max_tokens = kwargs.get("max_tokens", self.max_tokens)
         
+        # More aggressive anti-repetition for stability
+        temperature = min(0.95, temperature + 0.1)  # Increase randomness slightly
+        
         if repetition_penalty:
-            temperature = min(1.0, temperature + 0.3)  # Increase randomness
+            temperature = min(1.0, temperature + 0.2)  # Additional increase for explicit repetition penalty
         
         # Resource-aware generation during server stress
         if self.consecutive_failures > 0:
@@ -118,19 +121,19 @@ class DemonologyClient:
             "stream": stream
         }
         
-        # Add repetition penalty if provided
-        if repetition_penalty:
-            payload["frequency_penalty"] = repetition_penalty
-            payload["presence_penalty"] = 0.6  # Discourage repeated topics
+        # Enhanced anti-repetition penalties
+        payload["frequency_penalty"] = repetition_penalty if repetition_penalty else 0.8
+        payload["presence_penalty"] = 0.9  # Strong penalty for repeated topics
         
-        # Add tools if provided - Re-enabled with grammar workaround
+        # Add tools if provided - Enhanced with JSON schema validation
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-            # Add stop sequences to prevent infinite generation
-            payload["stop"] = ["<|endoftext|>", "<|im_end|>", "</s>", "\n\n---"]
-            # Lower max_tokens for tool calls to prevent grammar issues
-            payload["max_tokens"] = min(max_tokens, 2048)
+            # Constrain outputs hard with stop sequences
+            payload["stop"] = ["</tool_call>", "```", "<END>", "<|endoftext|>", "<|im_end|>", "</s>"]
+            # Constrain token generation for tool/JSON calls
+            payload["max_tokens"] = min(max_tokens, 512)
+            # NOTE: Cannot use grammar constraints with tools in llama.cpp
         
         # Add any additional parameters
         for key in ["frequency_penalty", "presence_penalty", "stop"]:
@@ -138,6 +141,53 @@ class DemonologyClient:
                 payload[key] = kwargs[key]
         
         return payload
+    
+    def _get_tool_call_grammar(self) -> str:
+        """Get JSON schema grammar for tool calls."""
+        return '''
+        root ::= tool_call
+        tool_call ::= "{" "\"type\":" "\"function\"" "," "\"function\":" function "}"
+        function ::= "{" "\"name\":" string "," "\"arguments\":" object "}"
+        object ::= "{" (string ":" value ("," string ":" value)*)? "}"
+        value ::= string | number | boolean | null | array | object
+        array ::= "[" (value ("," value)*)? "]"
+        string ::= "\"" [^"]* "\""
+        number ::= "-"? [0-9]+ ("." [0-9]+)?
+        boolean ::= "true" | "false"
+        null ::= "null"
+        '''
+    
+    def _validate_and_repair_json(self, json_str: str) -> Dict[str, Any]:
+        """Validate JSON and attempt repair if invalid."""
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError as e:
+            logger.warning(f"Invalid JSON detected: {e}")
+            # Attempt simple repairs
+            repaired = self._attempt_json_repair(json_str)
+            if repaired:
+                try:
+                    return json.loads(repaired)
+                except json.JSONDecodeError:
+                    logger.error("JSON repair failed")
+                    raise DemonologyAPIError("Fix JSON only.")
+            raise DemonologyAPIError("Fix JSON only.")
+    
+    def _attempt_json_repair(self, json_str: str) -> Optional[str]:
+        """Attempt basic JSON repairs."""
+        # Common fixes
+        repaired = json_str.strip()
+        
+        # Fix missing closing braces
+        open_braces = repaired.count('{')
+        close_braces = repaired.count('}')
+        if open_braces > close_braces:
+            repaired += '}' * (open_braces - close_braces)
+        
+        # Fix trailing commas
+        repaired = re.sub(r',(\s*[}\]])', r'\1', repaired)
+        
+        return repaired
     
     async def _exponential_backoff_delay(self, attempt: int) -> None:
         """Apply exponential backoff with jitter for retry attempts."""

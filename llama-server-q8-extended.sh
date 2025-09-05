@@ -1,47 +1,47 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Llama Server Enhanced Stability Script (No Sudo Required)
-# This script launches llama.cpp with optimizations for long-running stability
+# Llama Server Q8_0 Extended Context Script
+# This script uses q8_0 quantization to maximize context length
 
 LLAMA_BIN="/home/k/llama.cpp/build/bin/llama-server"
 MODEL_PATH="/media/k/vbox1/models/Qwen3/Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf"
 
-# Enhanced stability settings
-CONTEXT=29768
+# Extended context settings
+CONTEXT=98304                           # Optimized extended context length (96K)
 NGL=48
 THREADS=20
 BATCH_SIZE=170
-ALIAS="qwen3-coder-30b-tools"
+ALIAS="qwen3-coder-30b-tools-extended"
 
-# Memory and stability optimizations with aggressive quantization
+# Memory optimizations with q8_0 quantization
 CONT_BATCHING="--cont-batching"        # Enable continuous batching
 PARALLEL=8                             # Parallel processing slots
-CACHE_TYPE_K="bf16"                    # Key cache type (memory efficient)
-CACHE_TYPE_V="bf16"                    # Value cache type (memory efficient) 
-# DEFRAG_THOLD deprecated in newer builds
+CACHE_TYPE_K="q8_0"                    # Key cache type (q8 quantization)
+CACHE_TYPE_V="q8_0"                    # Value cache type (q8 quantization) 
 NUMA="--numa isolate"                  # NUMA optimization
 
-# Connection stability settings (timeout args not supported in this version)
+# Connection stability settings
 KEEP_ALIVE=300                         # 5 minute keep-alive
 
 echo "=========================================="
-echo "🚀 Launching Qwen3 30B (ENHANCED STABILITY - NO SUDO)"
+echo "🚀 Launching Qwen3 30B (Q8_0 EXTENDED CONTEXT)"
 echo "Model: $(basename "$MODEL_PATH")"
 echo "Context: $CONTEXT | NGL: $NGL"
 echo "GPU Split: layer mode across GPUs (auto)"
 echo "Threads: $THREADS | Batch: $BATCH_SIZE"
 echo "Parallel Slots: $PARALLEL | Keep-Alive: ${KEEP_ALIVE}s"
-echo "Cache: ${CACHE_TYPE_K}/${CACHE_TYPE_V} (quantized) | Flash Attention: Enabled"
+echo "Cache: ${CACHE_TYPE_K}/${CACHE_TYPE_V} (q8_0 quantized) | Flash Attention: Enabled"
 echo "=========================================="
-echo "🛡️  STABILITY & MEMORY ENHANCEMENTS ACTIVE"
+echo "🛡️  EXTENDED CONTEXT OPTIMIZATION ACTIVE"
 echo "• Continuous batching enabled"
-echo "• Enhanced cache quantization (K:bf16, V:bf16)"
+echo "• Q8_0 cache quantization (balanced quality/memory)"
 echo "• Flash Attention optimization enabled"
 echo "• Connection keep-alive enabled"
 echo "• NUMA optimization enabled"
+echo "• Extended context: $((($CONTEXT + 512) / 1024))K tokens"
 echo "=========================================="
-echo "🎬 Starting ultra-stable server… (Ctrl+C to stop)"
+echo "🎬 Starting extended-context server… (Ctrl+C to stop)"
 echo
 
 # Set user-level optimizations (no sudo required)
@@ -68,7 +68,7 @@ cleanup() {
 # Register cleanup function
 trap cleanup SIGINT SIGTERM
 
-# Launch the server with enhanced stability settings
+# Launch the server with q8_0 extended context settings
 exec "$LLAMA_BIN" \
   -m "$MODEL_PATH" \
   --host 0.0.0.0 \

@@ -867,6 +867,111 @@ class GhidraAnalysisTool(Tool):
         
         return None
     
+    def _find_ghidra_script(self, script_name: str) -> Optional[str]:
+        """Find a Ghidra script in common locations."""
+        script_paths = [
+            f"/opt/ghidra/Ghidra/Features/Base/ghidra_scripts/{script_name}",
+            f"/usr/local/ghidra/Ghidra/Features/Base/ghidra_scripts/{script_name}",
+        ]
+        
+        # Check environment variable path
+        ghidra_install = os.environ.get("GHIDRA_INSTALL_DIR")
+        if ghidra_install:
+            script_paths.append(f"{ghidra_install}/Ghidra/Features/Base/ghidra_scripts/{script_name}")
+        
+        for path in script_paths:
+            if Path(path).exists():
+                return path
+        
+        return None
+    
+    async def _create_json_export_script(self, temp_path: Path) -> Path:
+        """Create a temporary JSON export script."""
+        script_path = temp_path / "ExportJson.py"
+        
+        script_content = '''
+#!/usr/bin/env python3
+"""
+Temporary JSON Export Script for Ghidra Analysis
+"""
+
+import json
+from ghidra.app.script import GhidraScript
+from ghidra.program.model.listing import Function
+
+try:
+    program = getCurrentProgram()
+    if not program:
+        print("ERROR: No program loaded")
+        exit()
+    
+    # Collect analysis data
+    analysis_data = {
+        "program_info": {
+            "name": str(program.getName()),
+            "language": str(program.getLanguage()),
+            "image_base": hex(program.getImageBase().getOffset()),
+            "min_address": hex(program.getMinAddress().getOffset()),
+            "max_address": hex(program.getMaxAddress().getOffset())
+        },
+        "functions": [],
+        "symbols": [],
+        "entry_points": []
+    }
+    
+    # Export functions
+    function_manager = program.getFunctionManager()
+    functions = function_manager.getFunctions(True)
+    for func in functions:
+        if func is None:
+            continue
+            
+        func_data = {
+            "name": str(func.getName()),
+            "address": hex(func.getEntryPoint().getOffset()),
+            "size": func.getBody().getNumAddresses(),
+        }
+        analysis_data["functions"].append(func_data)
+        if len(analysis_data["functions"]) > 100:  # Limit output
+            break
+    
+    # Export symbols
+    symbol_table = program.getSymbolTable()
+    symbols = symbol_table.getAllSymbols(True)
+    
+    count = 0
+    for symbol in symbols:
+        if symbol is None or count > 100:  # Limit output
+            break
+            
+        symbol_data = {
+            "name": str(symbol.getName()),
+            "address": hex(symbol.getAddress().getOffset()),
+            "type": str(symbol.getSymbolType()),
+        }
+        analysis_data["symbols"].append(symbol_data)
+        count += 1
+    
+    # Output JSON
+    json_output = json.dumps(analysis_data, indent=2)
+    print("JSON_START")
+    print(json_output)
+    print("JSON_END")
+    
+except Exception as e:
+    error_data = {
+        "error": True,
+        "message": str(e),
+        "type": type(e).__name__
+    }
+    print("JSON_START")
+    print(json.dumps(error_data, indent=2))
+    print("JSON_END")
+'''
+        
+        script_path.write_text(script_content)
+        return script_path
+    
     async def execute(self, binary_path: str, analysis_type: str = "basic", 
                      output_format: str = "text", script_path: Optional[str] = None,
                      timeout: int = 300, **_) -> Dict[str, Any]:
@@ -902,11 +1007,21 @@ class GhidraAnalysisTool(Tool):
                     "-noanalysis" if analysis_type == "basic" else "-analyse"
                 ]
                 
-                # Add output format options
+                # Add output format options (check if script exists first)
                 if output_format == "json":
-                    cmd.extend(["-postScript", "ExportJson.py"])
+                    json_script_path = self._find_ghidra_script("ExportJson.py")
+                    if json_script_path:
+                        cmd.extend(["-postScript", json_script_path])
+                    else:
+                        # Create a simple JSON export script on the fly
+                        json_script = await self._create_json_export_script(temp_path)
+                        cmd.extend(["-postScript", str(json_script)])
                 elif output_format == "xml":
-                    cmd.extend(["-postScript", "ExportXml.py"])
+                    xml_script_path = self._find_ghidra_script("ExportXml.py")
+                    if xml_script_path:
+                        cmd.extend(["-postScript", xml_script_path])
+                    else:
+                        logger.warning("ExportXml.py script not found, using text output")
                 
                 # Add custom script if provided
                 if script_path:

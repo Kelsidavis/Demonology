@@ -224,8 +224,46 @@ class DemonologyApp:
         
         return {
             "role": "system",
-            "content": f"{breakers[breaker_idx]}"
+            "content": f"{breakers[breaker_idx]} Remember: emit only new code, no repeats."
         }
+    
+    def _generate_context_summary(self, messages: List[Dict[str, str]]) -> str:
+        """Generate a concise summary of conversation context."""
+        if not messages:
+            return "No prior context"
+        
+        # Extract key topics and actions
+        topics = set()
+        tools_used = set()
+        
+        for msg in messages:
+            content = str(msg.get('content', '')).lower()
+            
+            # Extract topics
+            if 'file' in content or 'read' in content:
+                topics.add('file operations')
+            if 'code' in content or 'python' in content or 'script' in content:
+                topics.add('coding')
+            if 'analyze' in content or 'debug' in content:
+                topics.add('analysis')
+            if 'create' in content or 'generate' in content:
+                topics.add('creation')
+                
+            # Extract tool usage
+            if 'file_operations' in content:
+                tools_used.add('files')
+            if 'code_execution' in content:
+                tools_used.add('execution')
+            if 'web_search' in content:
+                tools_used.add('web')
+        
+        summary_parts = []
+        if topics:
+            summary_parts.append(f"Topics: {', '.join(list(topics)[:3])}")
+        if tools_used:
+            summary_parts.append(f"Tools: {', '.join(list(tools_used)[:3])}")
+        
+        return '; '.join(summary_parts) if summary_parts else "General conversation"
 
     
 
@@ -573,8 +611,8 @@ class DemonologyApp:
             else:
                 regular_messages.append(msg)
         
-        # Calculate how many regular messages to keep
-        target_context = int(stats['available_context'] * 0.7)  # Aim for 70% usage
+        # Calculate how many regular messages to keep (keep 20% headroom)
+        target_context = int(stats['available_context'] * 0.8)  # Aim for 80% usage max
         current_tokens = stats['estimated_tokens']
         tokens_to_remove = current_tokens - target_context
         
@@ -591,6 +629,17 @@ class DemonologyApp:
             content_length = len(str(msg.get('content', '')))
             tokens_kept += int(content_length / 3.5)
             messages_to_keep.append(msg)
+        
+        # Add rolling summary if significant content was removed
+        if len(regular_messages) > 6:
+            removed_messages = regular_messages[:-6]
+            if len(removed_messages) > 2:
+                summary = self._generate_context_summary(removed_messages[-10:])  # Summary of last 10 removed
+                summary_msg = {
+                    "role": "system",
+                    "content": f"[CONTEXT SUMMARY] Previous conversation: {summary}"
+                }
+                messages_to_keep.insert(0, summary_msg)
         
         # Add older messages if we have token budget
         remaining_tokens = target_context - tokens_kept
@@ -1298,6 +1347,59 @@ Config file: {cfg.config_path}
         
         return prompts.get(context_type, prompts['general'])
     
+    async def _prompt_auto_continue_setup(self):
+        """Prompt user to configure auto-continue on startup."""
+        current_status = "enabled" if self.config.ui.auto_continue_enabled else "disabled"
+        timeout = self.config.ui.auto_continue_timeout
+        
+        # Create a nice startup prompt
+        self.ui.console.print()
+        self.ui.console.print("[bold yellow]⚙️  Auto-Continue Setup[/bold yellow]")
+        self.ui.console.print(f"[dim]Auto-continue is currently [bold]{current_status}[/bold] (timeout: {timeout}s)[/dim]")
+        self.ui.console.print("[dim]Auto-continue automatically resumes work after timeout periods[/dim]")
+        self.ui.console.print()
+        
+        # Simple prompt with clear options
+        self.ui.console.print("[yellow]Quick setup:[/yellow]")
+        self.ui.console.print("  [green]y[/green]/[green]yes[/green] - Enable auto-continue")  
+        self.ui.console.print("  [red]n[/red]/[red]no[/red] - Disable auto-continue")
+        self.ui.console.print("  [cyan]<number>[/cyan] - Enable with custom timeout (seconds)")
+        self.ui.console.print("  [dim]<enter>[/dim] - Keep current setting")
+        
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(input, "\nAuto-continue setting: "), 
+                timeout=15.0
+            )
+            response = response.strip().lower()
+            
+            if response in ['y', 'yes']:
+                self.config.ui.auto_continue_enabled = True
+                self.ui.display_success(f"✅ Auto-continue enabled (timeout: {self.config.ui.auto_continue_timeout}s)")
+            elif response in ['n', 'no']:
+                self.config.ui.auto_continue_enabled = False
+                self.ui.display_success("✅ Auto-continue disabled")
+            elif response.isdigit():
+                timeout_val = int(response)
+                if 10 <= timeout_val <= 300:  # 10 seconds to 5 minutes
+                    self.config.ui.auto_continue_enabled = True
+                    self.config.ui.auto_continue_timeout = float(timeout_val)
+                    self.ui.display_success(f"✅ Auto-continue enabled with {timeout_val}s timeout")
+                else:
+                    self.ui.display_warning("Timeout must be between 10-300 seconds. Keeping current setting.")
+            elif response == "":
+                self.ui.display_info("✅ Keeping current auto-continue setting")
+            else:
+                self.ui.display_warning("Invalid response. Keeping current setting.")
+                
+        except asyncio.TimeoutError:
+            # Auto-timeout after 15 seconds
+            self.ui.display_info("⏰ Setup timed out. Keeping current auto-continue setting.")
+        except KeyboardInterrupt:
+            self.ui.display_info("⏹️  Setup cancelled. Keeping current setting.")
+        
+        self.ui.console.print()
+    
     async def _get_input_with_timeout(self, timeout: float) -> Optional[str]:
         """Get user input with timeout. Returns None if timeout occurs."""
         try:
@@ -1389,33 +1491,13 @@ Config file: {cfg.config_path}
 
                 if self.config.tools.enabled and tools:
                     system_msg = {
-                        "role": "system",
+                        "role": "system", 
                         "content": (
-                            "You are Demonology, a helpful AI assistant with full system access through 17 powerful tools. "
-                            "Use tools proactively when users ask you to work on files, analyze code, or perform tasks.\n\n"
-                            "CORE TOOLS (use these frequently):\n"
-                            "- file_operations: READ/WRITE/CREATE/DELETE files anywhere (operation='read'/'write'/'list'/'create_directory')\n"
-                            "- codebase_analysis: Analyze code structure, search files, index repositories (operation='tree'/'grep'/'read_chunk')\n"
-                            "- code_execution: Run Python/bash scripts, install packages, execute system commands\n"
-                            "- project_planning: Create complete project structures and continue existing work\n\n"
-                            "ANALYSIS TOOLS:\n"
-                            "- image_analysis: Analyze images, extract text, identify objects\n"
-                            "- image_generation: Create images from descriptions\n"
-                            "- disassembler: Disassemble binary files with objdump/radare2/capstone\n"
-                            "- hex_editor: View/edit binary files in hex format\n"
-                            "- pattern_search: Search for strings/patterns in binaries\n"
-                            "- debugger: Debug binaries with GDB integration\n"
-                            "- ghidra_analysis: Perform deep binary analysis\n\n"
-                            "AUDIO TOOLS:\n"
-                            "- waveform_generator: Generate audio waveforms\n"
-                            "- synthesizer: Advanced audio synthesis with FM/AM\n"
-                            "- audio_analysis: Analyze audio files and extract features\n"
-                            "- midi_tool: Generate and parse MIDI files\n\n"
-                            "WEB TOOLS:\n"
-                            "- web_search: Search for information online\n"
-                            "- reddit_search: Search Reddit discussions\n\n"
-                            "IMPORTANT: When users mention files or ask to analyze/read documentation, USE the file_operations tool with operation='read' or 'list'. "
-                            "Don't say you can't access files - you have full file system access!"
+                            "You are Demonology AI with 17 system tools. Use tools when users need files, code, or tasks done. "
+                            "Tool names: file_operations, codebase_analysis, code_execution, project_planning, "
+                            "image_analysis, image_generation, disassembler, hex_editor, pattern_search, debugger, "
+                            "ghidra_analysis, waveform_generator, synthesizer, audio_analysis, midi_tool, "
+                            "web_search, reddit_search. No synonyms - use exact names."
                         )
                     }
                 else:
@@ -1485,6 +1567,9 @@ Config file: {cfg.config_path}
             if not await self.ensure_server_connection():
                 self.ui.display_error("Cannot establish connection to API. Check your configuration and ensure your server is running.")
                 return 1
+            
+            # Prompt for auto-continue setting on startup
+            await self._prompt_auto_continue_setup()
             
             # Layout mode disabled due to stability issues
             # self.ui.start_layout_mode()

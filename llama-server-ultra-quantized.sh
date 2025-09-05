@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Llama Server Enhanced Stability Script (No Sudo Required)
-# This script launches llama.cpp with optimizations for long-running stability
+# Llama Server Ultra-Quantized Memory-Optimized Script
+# This script uses maximum quantization for minimal memory usage
 
 LLAMA_BIN="/home/k/llama.cpp/build/bin/llama-server"
 MODEL_PATH="/media/k/vbox1/models/Qwen3/Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf"
@@ -12,13 +12,13 @@ CONTEXT=29768
 NGL=48
 THREADS=20
 BATCH_SIZE=170
-ALIAS="qwen3-coder-30b-tools"
+ALIAS="qwen3-coder-30b-tools-ultra"
 
-# Memory and stability optimizations with aggressive quantization
+# Ultra-aggressive memory optimizations 
 CONT_BATCHING="--cont-batching"        # Enable continuous batching
 PARALLEL=8                             # Parallel processing slots
-CACHE_TYPE_K="bf16"                    # Key cache type (memory efficient)
-CACHE_TYPE_V="bf16"                    # Value cache type (memory efficient) 
+CACHE_TYPE_K="q4_0"                    # Key cache type (ultra quantization)
+CACHE_TYPE_V="q4_0"                    # Value cache type (ultra quantization) 
 # DEFRAG_THOLD deprecated in newer builds
 NUMA="--numa isolate"                  # NUMA optimization
 
@@ -26,22 +26,23 @@ NUMA="--numa isolate"                  # NUMA optimization
 KEEP_ALIVE=300                         # 5 minute keep-alive
 
 echo "=========================================="
-echo "🚀 Launching Qwen3 30B (ENHANCED STABILITY - NO SUDO)"
+echo "🚀 Launching Qwen3 30B (ULTRA-QUANTIZED MEMORY)"
 echo "Model: $(basename "$MODEL_PATH")"
 echo "Context: $CONTEXT | NGL: $NGL"
 echo "GPU Split: layer mode across GPUs (auto)"
 echo "Threads: $THREADS | Batch: $BATCH_SIZE"
 echo "Parallel Slots: $PARALLEL | Keep-Alive: ${KEEP_ALIVE}s"
-echo "Cache: ${CACHE_TYPE_K}/${CACHE_TYPE_V} (quantized) | Flash Attention: Enabled"
+echo "Cache: ${CACHE_TYPE_K}/${CACHE_TYPE_V} (ultra-quantized) | Flash Attention: Enabled"
 echo "=========================================="
-echo "🛡️  STABILITY & MEMORY ENHANCEMENTS ACTIVE"
+echo "🛡️  ULTRA MEMORY OPTIMIZATION ACTIVE"
 echo "• Continuous batching enabled"
-echo "• Enhanced cache quantization (K:bf16, V:bf16)"
-echo "• Flash Attention optimization enabled"
+echo "• Ultra-aggressive cache quantization (K:q4_0, V:q4_0)"
+echo "• Flash Attention with ultra-quantization enabled"
 echo "• Connection keep-alive enabled"
 echo "• NUMA optimization enabled"
+echo "⚠️  WARNING: May impact quality for extreme memory savings"
 echo "=========================================="
-echo "🎬 Starting ultra-stable server… (Ctrl+C to stop)"
+echo "🎬 Starting ultra-memory-optimized server… (Ctrl+C to stop)"
 echo
 
 # Set user-level optimizations (no sudo required)
@@ -68,7 +69,7 @@ cleanup() {
 # Register cleanup function
 trap cleanup SIGINT SIGTERM
 
-# Launch the server with enhanced stability settings
+# Launch the server with ultra-quantized settings
 exec "$LLAMA_BIN" \
   -m "$MODEL_PATH" \
   --host 0.0.0.0 \
