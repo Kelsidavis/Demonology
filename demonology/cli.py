@@ -1103,10 +1103,10 @@ Config file: {cfg.config_path}
         arguments = {}
         
         try:
+            import re
             # Common patterns for each tool type
             if function_name == "file_operations":
                 # Try to extract operation
-                import re
                 op_match = re.search(r'"operation":\s*"([^"]*)"', arguments_str)
                 if op_match:
                     arguments["operation"] = op_match.group(1)

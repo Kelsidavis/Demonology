@@ -62,6 +62,8 @@ class FileOperationsTool(Tool):
     async def execute(self, operation: str, **kwargs) -> Dict[str, Any]:
         try:
             op = (operation or "").strip().lower()
+            if not op:
+                return {"success": False, "error": "Missing required parameter: operation"}
             if op in ("create_or_write_file", "write", "write_file"):
                 return await self._create_or_write_file(kwargs.get("path"), kwargs.get("content", ""))
             if op == "create_directory":
