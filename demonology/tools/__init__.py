@@ -256,7 +256,17 @@ class ToolRegistry:
                 
         except Exception as e:
             logger.exception("Tool execution failed: %s", tool_name)
-            return {"success": False, "error": f"Tool execution failed: {e}", "tool": tool_name}
+            error_msg = str(e)
+            
+            # Provide actionable error messages for autonomous coding workflows
+            if "Unsupported language" in error_msg:
+                return {"success": False, "error": f"Language not supported by {tool_name}. Supported languages may include: python, bash. Check tool documentation.", "tool": tool_name, "actionable": True}
+            elif "not found" in error_msg.lower():
+                return {"success": False, "error": f"Resource not found for {tool_name}: {error_msg}. Verify file paths and dependencies.", "tool": tool_name, "actionable": True}
+            elif "permission" in error_msg.lower() or "access" in error_msg.lower():
+                return {"success": False, "error": f"Access denied for {tool_name}: {error_msg}. Check file permissions.", "tool": tool_name, "actionable": True}
+            else:
+                return {"success": False, "error": f"Tool execution failed: {error_msg}", "tool": tool_name, "actionable": False}
 
 
 __all__ = [

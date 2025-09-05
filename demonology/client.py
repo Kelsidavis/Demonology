@@ -132,6 +132,9 @@ class DemonologyClient:
         Returns:
             tuple: (cleaned_content, tool_calls_if_found)
         """
+        # Output validation for autonomous coding reliability
+        if not content or len(content) > 50000:  # Prevent processing extremely long content
+            return content, None
         if not content or ("<function=" not in content and "<tool_call>" not in content):
             return content, None
             
@@ -351,6 +354,10 @@ class DemonologyClient:
         
         Yields response chunks (content or tool calls) as they arrive.
         """
+        # Repetition detection for autonomous coding reliability
+        repetition_buffer = []
+        repetition_threshold = 5  # Number of identical chunks before stopping
+        max_chunk_length = 1000   # Prevent excessively long repetitive chunks
         url = f"{self.base_url}/chat/completions"
         payload = self._build_request_payload(messages, stream=True, tools=tools, **kwargs)
         
@@ -392,6 +399,26 @@ class DemonologyClient:
                                         # Preprocess delta to handle XML-style tool calls (Qwen3 compatibility)
                                         if delta:  # Only process if delta has content
                                             preprocessed_delta = self._preprocess_delta_for_xml_tools(delta)
+                                            
+                                            # Repetition detection for autonomous coding reliability
+                                            content = preprocessed_delta.get("content", "")
+                                            if content:
+                                                # Check for excessively long chunks (potential repetition)
+                                                if len(content) > max_chunk_length:
+                                                    logger.warning(f"Detected extremely long chunk ({len(content)} chars), likely repetitive generation")
+                                                    break
+                                                
+                                                # Track recent content for repetition detection
+                                                repetition_buffer.append(content)
+                                                if len(repetition_buffer) > repetition_threshold:
+                                                    repetition_buffer.pop(0)
+                                                
+                                                # Check if we're in a repetition loop
+                                                if len(repetition_buffer) >= repetition_threshold:
+                                                    if len(set(repetition_buffer)) == 1:  # All chunks are identical
+                                                        logger.warning("Detected repetition loop, stopping generation")
+                                                        break
+                                            
                                             yield preprocessed_delta
                                             
                             except json.JSONDecodeError as e:
