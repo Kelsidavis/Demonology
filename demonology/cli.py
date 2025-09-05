@@ -111,33 +111,121 @@ class DemonologyApp:
         context_str = f" | Context: {context}" if context else ""
         logger.error(f"Error #{self._error_count} ({error_type}): {error_message}{context_str}")
 
-    def _handle_repetition_recovery(self):
-        """Handle repetition loop recovery strategies."""
+    def _handle_repetition_recovery(self, is_critical: bool = False):
+        """Enhanced repetition loop recovery with context storms handling."""
         current_time = time.time()
         self._repetition_count += 1
         
-        # If we've had multiple repetitions in a short time, apply aggressive recovery
         time_since_last = current_time - self._last_repetition_time
         self._last_repetition_time = current_time
         
-        if time_since_last < 60 and self._repetition_count > 3:  # 3+ loops in 1 minute
-            logger.warning(f"Frequent repetition detected ({self._repetition_count} loops), applying recovery strategies")
-            
-            # Strategy 1: Trim conversation aggressively
-            if len(self.conversation_history) > 10:
-                self.ui.display_warning("🔄 Trimming conversation history to break repetition pattern")
-                self._trim_conversation_smart()
-            
-            # Strategy 2: Force a different approach message
-            recovery_msg = {
-                "role": "system",
-                "content": "SYSTEM: Previous response got stuck in repetition. Please provide a different approach or ask for clarification."
-            }
-            self.conversation_history.append(recovery_msg)
-            
-            return True  # Applied recovery
+        # Critical repetition (from client-level detection) or frequent repetitions
+        is_repetition_storm = (
+            is_critical or 
+            (time_since_last < 60 and self._repetition_count > 2) or  # 2+ loops in 1 minute
+            (time_since_last < 300 and self._repetition_count > 5)    # 5+ loops in 5 minutes  
+        )
         
-        return False  # No recovery needed
+        if is_repetition_storm:
+            storm_level = "CRITICAL" if is_critical else "HIGH"
+            logger.error(f"{storm_level} repetition storm detected ({self._repetition_count} total loops)")
+            self.ui.display_warning(f"⚠️  {storm_level} repetition detected - applying recovery strategies...")
+            
+            # Strategy 1: Aggressive context trimming based on storm severity
+            if is_critical or self._repetition_count > 5:
+                # Nuclear option - keep only last 3 exchanges
+                logger.warning("Applying nuclear context reset - keeping only last 3 exchanges")
+                self.ui.display_warning("🔥 Nuclear context reset - clearing most conversation history")
+                self._nuclear_context_reset()
+            elif len(self.conversation_history) > 8:
+                # Aggressive trimming - keep only last 8 messages 
+                logger.warning("Applying aggressive context trimming")
+                self.ui.display_warning("🔄 Aggressive context trimming to break patterns")
+                self._trim_conversation_history(8)
+            
+            # Strategy 2: Add pattern-breaking system message
+            pattern_breaker = self._generate_pattern_breaker_message()
+            self.conversation_history.append(pattern_breaker)
+            
+            # Strategy 3: Request server health check and possible restart
+            if is_critical and hasattr(self, 'client') and self.client:
+                logger.warning("Critical repetition may indicate server stress - marking for health check")
+                # Mark client for potential server restart on next request
+                self.client.consecutive_failures = max(self.client.consecutive_failures, 2)
+            
+            # Strategy 4: Reset repetition tracking after recovery
+            if self._repetition_count > 10:  # Reset after too many attempts
+                logger.info("Resetting repetition counter after recovery attempt")
+                self._repetition_count = 0
+                
+            return True
+            
+        elif time_since_last < 120 and self._repetition_count > 1:  # Minor repetition
+            logger.info(f"Minor repetition detected ({self._repetition_count} loops), applying light recovery")
+            self.ui.display_info("🔄 Minor repetition detected - nudging conversation forward")
+            
+            # Light strategy: Just add a gentle nudge
+            nudge_msg = {
+                "role": "system", 
+                "content": "Note: Please try a different approach or provide more specific details."
+            }
+            self.conversation_history.append(nudge_msg)
+            return True
+        
+        return False
+    
+    def _nuclear_context_reset(self):
+        """Nuclear option: Keep only the most recent essential exchanges."""
+        if len(self.conversation_history) <= 6:
+            return  # Already minimal
+            
+        # Find the last user message and preserve context around it
+        last_user_idx = -1
+        for i in range(len(self.conversation_history) - 1, -1, -1):
+            if self.conversation_history[i].get('role') == 'user':
+                last_user_idx = i
+                break
+        
+        if last_user_idx >= 0:
+            # Keep system message (if exists) + last user message + any assistant response
+            preserved = []
+            
+            # Preserve initial system message if it exists
+            if (self.conversation_history and 
+                self.conversation_history[0].get('role') == 'system' and
+                'pattern-breaker' not in self.conversation_history[0].get('content', '').lower()):
+                preserved.append(self.conversation_history[0])
+            
+            # Keep last 2-3 exchanges maximum
+            start_idx = max(0, last_user_idx - 2)  # At most 2 messages before last user message
+            preserved.extend(self.conversation_history[start_idx:])
+            
+            removed_count = len(self.conversation_history) - len(preserved)
+            self.conversation_history = preserved
+            
+            logger.info(f"Nuclear context reset: removed {removed_count} messages, kept {len(preserved)}")
+        else:
+            # Fallback: keep only last 3 messages
+            removed_count = len(self.conversation_history) - 3
+            self.conversation_history = self.conversation_history[-3:]
+            logger.info(f"Nuclear context reset (fallback): removed {removed_count} messages")
+    
+    def _generate_pattern_breaker_message(self) -> Dict[str, str]:
+        """Generate a pattern-breaking system message based on context."""
+        breakers = [
+            "SYSTEM INTERVENTION: Previous responses were repetitive. Please take a completely different approach. If you're stuck, ask for clarification or break down the problem into smaller steps.",
+            "PATTERN BREAK: The conversation has entered a loop. Please step back, reassess the situation, and try a fresh perspective or ask what specific aspect needs attention.",
+            "RECOVERY MODE: Repetitive generation detected. Please provide a concise, direct response that moves the conversation forward in a new direction.",
+            "CONTEXT RESET: Previous approach wasn't working. Please try a different method entirely or ask for more specific requirements.",
+        ]
+        
+        # Choose based on repetition count for variety
+        breaker_idx = (self._repetition_count - 1) % len(breakers)
+        
+        return {
+            "role": "system",
+            "content": f"{breakers[breaker_idx]}"
+        }
 
     
 
@@ -775,9 +863,13 @@ Config file: {cfg.config_path}
         except Exception as e:
             # Check if this is a repetition-related error
             if "repetition loop" in str(e).lower() or "repetitive generation" in str(e).lower():
-                recovery_applied = self._handle_repetition_recovery()
+                is_critical = "critical" in str(e).lower() or "exactly" in str(e).lower()
+                recovery_applied = self._handle_repetition_recovery(is_critical=is_critical)
                 if recovery_applied:
-                    self.ui.display_info("🔄 Applied repetition recovery - retrying with modified context")
+                    if is_critical:
+                        self.ui.display_warning("⚠️  CRITICAL repetition detected - applied nuclear recovery")
+                    else:
+                        self.ui.display_info("🔄 Applied repetition recovery - retrying with modified context")
                     await self.ui.stop_loading()
                     return  # Let the caller retry
             

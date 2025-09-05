@@ -38,6 +38,13 @@ class DemonologyClient:
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         
+        # Server health monitoring
+        self.consecutive_failures = 0
+        self.last_successful_request = time.time()
+        self.server_restart_threshold = 3  # Restart after 3 consecutive failures
+        self.health_check_interval = 30.0  # Check health every 30 seconds during issues
+        self.is_in_recovery_mode = False
+        
         # Create timeout configuration with much longer timeouts for stability
         timeout_config = httpx.Timeout(
             connect=30.0,  # Increased connection timeout
@@ -91,13 +98,21 @@ class DemonologyClient:
         """Build the request payload for the API."""
         # Apply anti-repetition settings if specified
         temperature = kwargs.get("temperature", self.temperature)
+        max_tokens = kwargs.get("max_tokens", self.max_tokens)
+        
         if repetition_penalty:
             temperature = min(1.0, temperature + 0.3)  # Increase randomness
+        
+        # Resource-aware generation during server stress
+        if self.consecutive_failures > 0:
+            # Reduce token generation to prevent server overload
+            max_tokens = min(max_tokens, 512)
+            logger.debug(f"Reducing max_tokens to {max_tokens} due to server stress")
         
         payload = {
             "model": kwargs.get("model", self.model),
             "messages": messages,
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            "max_tokens": max_tokens,
             "temperature": temperature,
             "top_p": kwargs.get("top_p", self.top_p),
             "stream": stream
@@ -115,7 +130,7 @@ class DemonologyClient:
             # Add stop sequences to prevent infinite generation
             payload["stop"] = ["<|endoftext|>", "<|im_end|>", "</s>", "\n\n---"]
             # Lower max_tokens for tool calls to prevent grammar issues
-            payload["max_tokens"] = min(kwargs.get("max_tokens", self.max_tokens), 2048)
+            payload["max_tokens"] = min(max_tokens, 2048)
         
         # Add any additional parameters
         for key in ["frequency_penalty", "presence_penalty", "stop"]:
@@ -413,6 +428,13 @@ class DemonologyClient:
         last_exception = None
         
         for attempt in range(self.max_retries + 1):
+            # Check if we should attempt server recovery before trying
+            if attempt == 0 and self._should_attempt_server_restart():
+                recovery_success = await self._handle_connection_recovery()
+                if not recovery_success:
+                    # If recovery failed, still try the request but log the issue
+                    logger.warning("Server recovery failed, attempting request anyway")
+            
             try:
                 async with self._client.stream(
                     "POST",
@@ -486,10 +508,12 @@ class DemonologyClient:
                             raise DemonologyAPIError("Connection heartbeat timeout - server may be stalled")
                 
                 # If we reach here, the request was successful
+                self._mark_request_success()
                 return
             
             except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.RequestError, DemonologyAPIError) as e:
                 last_exception = e
+                self._mark_request_failure()
                 
                 # Check if this is a retryable error
                 retryable = False
@@ -511,6 +535,7 @@ class DemonologyClient:
             
             except Exception as e:
                 last_exception = e
+                self._mark_request_failure()
                 break
         
         # All retries exhausted, raise the last exception with appropriate formatting
@@ -601,9 +626,50 @@ class DemonologyClient:
             # Then test with a minimal chat completion
             messages = [{"role": "user", "content": "Hi"}]
             response = await self.chat_completion(messages, max_tokens=1)
+            self._mark_request_success()
             return True
         except Exception as e:
             logger.debug(f"Connection test failed: {e}")
+            self._mark_request_failure()
+            return False
+    
+    def _mark_request_success(self):
+        """Mark a successful request and reset failure tracking."""
+        self.consecutive_failures = 0
+        self.last_successful_request = time.time()
+        if self.is_in_recovery_mode:
+            logger.info("Server recovered successfully, exiting recovery mode")
+            self.is_in_recovery_mode = False
+    
+    def _mark_request_failure(self):
+        """Mark a failed request and update failure tracking."""
+        self.consecutive_failures += 1
+        logger.warning(f"Request failed ({self.consecutive_failures} consecutive failures)")
+    
+    def _should_attempt_server_restart(self) -> bool:
+        """Determine if we should attempt to restart the server."""
+        return (
+            self.consecutive_failures >= self.server_restart_threshold and
+            not self.is_in_recovery_mode and
+            (time.time() - self.last_successful_request) > 60  # At least 1 minute since last success
+        )
+    
+    async def _handle_connection_recovery(self) -> bool:
+        """Handle server recovery when connection issues detected."""
+        if not self._should_attempt_server_restart():
+            return False
+            
+        logger.error(f"Server appears unresponsive after {self.consecutive_failures} failures")
+        logger.info("Attempting automatic server recovery...")
+        
+        self.is_in_recovery_mode = True
+        recovery_success = await self.restart_server_and_reconnect()
+        
+        if recovery_success:
+            self._mark_request_success()
+            return True
+        else:
+            logger.error("Server recovery failed")
             return False
     
     async def restart_server_and_reconnect(self) -> bool:
@@ -613,80 +679,136 @@ class DemonologyClient:
         """
         import subprocess
         import asyncio
+        import os
         
-        logger.info("Attempting to restart llama server...")
+        logger.info("🔄 Attempting to restart llama server due to connection failures...")
         
         try:
-            # Kill any existing llama-server processes
-            logger.info("Killing existing llama-server processes...")
-            try:
-                result = subprocess.run(['pkill', '-f', 'llama-server'], 
-                                      capture_output=True, text=True, timeout=10)
-                logger.info(f"pkill result: {result.returncode}")
-            except subprocess.TimeoutExpired:
-                logger.warning("pkill command timed out")
-            except Exception as e:
-                logger.warning(f"pkill failed: {e}")
+            # Step 1: Aggressive process termination
+            logger.info("🔪 Killing existing llama-server processes...")
+            kill_commands = [
+                ['pkill', '-f', 'llama-server'],
+                ['pkill', '-f', 'llama.cpp'],
+                ['pkill', '-9', '-f', 'llama-server'],  # Force kill if needed
+            ]
             
-            # Wait a moment for processes to die and VRAM to clear
-            logger.info("Waiting for processes to terminate...")
-            await asyncio.sleep(5)
-            
-            # Additional VRAM clearing for NVIDIA GPUs
-            try:
-                result = subprocess.run(['nvidia-smi', '--gpu-reset'], 
-                                      capture_output=True, text=True, timeout=15)
-                logger.info(f"GPU reset attempted, result: {result.returncode}")
-                await asyncio.sleep(3)
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                logger.info("nvidia-smi not available or timed out, continuing...")
-            except Exception as e:
-                logger.warning(f"GPU reset failed: {e}")
-            
-            # Try to automatically restart the server
-            logger.info("Attempting to automatically restart server...")
-            
-            # Use the dedicated restart script
-            import os
-            restart_script = "/home/k/Desktop/Demonology/restart-llama.sh"
-            
-            if os.path.exists(restart_script) and os.access(restart_script, os.X_OK):
+            for cmd in kill_commands:
                 try:
-                    logger.info("Executing server restart script...")
-                    result = subprocess.run([restart_script], 
-                                          capture_output=True, text=True, timeout=30)
-                    logger.info(f"Restart script completed with code: {result.returncode}")
-                    if result.stdout:
-                        logger.info(f"Script output: {result.stdout.strip()}")
-                    await asyncio.sleep(10)  # Give server time to start
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                    logger.debug(f"Command {' '.join(cmd)} result: {result.returncode}")
                 except subprocess.TimeoutExpired:
-                    logger.warning("Restart script timed out, but server may still be starting...")
+                    logger.warning(f"Command {' '.join(cmd)} timed out")
                 except Exception as e:
-                    logger.error(f"Failed to run restart script: {e}")
-            else:
-                logger.info("Restart script not found. Please manually start your server:")
-                logger.info("Run: ./llama-server-stable.sh")
+                    logger.debug(f"Command {' '.join(cmd)} failed: {e}")
+                await asyncio.sleep(2)  # Short delay between kills
             
-            logger.info("Waiting for server to come back online (checking every 3 seconds)...")
+            # Step 2: Wait for processes to terminate and VRAM to clear
+            logger.info("⏳ Waiting for processes to terminate and VRAM to clear...")
+            await asyncio.sleep(8)
             
-            # Wait up to 120 seconds for server to come back online (model loading takes time)
-            for attempt in range(40):  # 40 * 3 = 120 seconds
-                await asyncio.sleep(3)
-                if await self.test_connection():
-                    logger.info(f"Server reconnected after {(attempt + 1) * 3} seconds")
-                    return True
-                    
-                if attempt % 5 == 0:  # Log every 15 seconds
-                    logger.info(f"Still waiting for server... ({(attempt + 1) * 3}s elapsed)")
-                    if attempt == 0:
-                        logger.info("Check /tmp/llama-server.log for server startup status")
+            # Step 3: GPU memory cleanup (if available)
+            try:
+                # Try to clear GPU memory more aggressively
+                gpu_commands = [
+                    ['nvidia-smi', '--gpu-reset-ecc=0'],  # Reset ECC if supported
+                    ['nvidia-smi', '--reset-gpu-reset'],   # Reset GPU
+                ]
+                
+                for cmd in gpu_commands:
+                    try:
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                        logger.debug(f"GPU command {' '.join(cmd)} result: {result.returncode}")
+                        await asyncio.sleep(2)
+                    except (subprocess.TimeoutExpired, FileNotFoundError):
+                        logger.debug(f"GPU command {' '.join(cmd)} not available or timed out")
+                    except Exception as e:
+                        logger.debug(f"GPU command {' '.join(cmd)} failed: {e}")
+                        
+            except Exception as e:
+                logger.debug(f"GPU cleanup failed: {e}")
             
-            logger.error("Server did not come back online within 120 seconds")
-            logger.error("Please manually start your server and try again")
+            # Step 4: Find and execute restart script
+            logger.info("🚀 Attempting to automatically restart server...")
+            
+            # Try multiple possible restart script locations
+            restart_scripts = [
+                "/home/k/Desktop/Demonology/restart-llama.sh",
+                "/home/k/Desktop/Demonology/llama-server-stable.sh",
+                "./restart-llama.sh",
+                "./llama-server-stable.sh"
+            ]
+            
+            restart_executed = False
+            for script_path in restart_scripts:
+                if os.path.exists(script_path) and os.access(script_path, os.X_OK):
+                    try:
+                        logger.info(f"📝 Executing server restart script: {script_path}")
+                        result = subprocess.run([script_path], 
+                                              capture_output=True, text=True, timeout=45)
+                        logger.info(f"Restart script completed with code: {result.returncode}")
+                        if result.stdout:
+                            logger.debug(f"Script output: {result.stdout.strip()[:200]}")
+                        if result.stderr:
+                            logger.debug(f"Script errors: {result.stderr.strip()[:200]}")
+                        restart_executed = True
+                        await asyncio.sleep(15)  # Give server time to start
+                        break
+                    except subprocess.TimeoutExpired:
+                        logger.warning("Restart script timed out, but server may still be starting...")
+                        restart_executed = True
+                        break
+                    except Exception as e:
+                        logger.warning(f"Failed to run restart script {script_path}: {e}")
+                        continue
+            
+            if not restart_executed:
+                logger.warning("❌ No restart script found. Please manually start your server:")
+                logger.warning("Recommended: Run './llama-server-stable.sh' or './restart-llama.sh'")
+                # Still wait for manual startup
+                await asyncio.sleep(5)
+            
+            # Step 5: Wait for server to become available
+            logger.info("⏱️  Waiting for server to come back online (checking every 4 seconds)...")
+            
+            # Increased wait time to 3 minutes for model loading
+            max_wait_time = 180  # 3 minutes
+            check_interval = 4   # Check every 4 seconds
+            max_attempts = max_wait_time // check_interval
+            
+            for attempt in range(max_attempts):
+                await asyncio.sleep(check_interval)
+                
+                # Use a simpler connection test during recovery
+                try:
+                    async with httpx.AsyncClient(timeout=8.0) as client:
+                        response = await client.get(f"{self.base_url.replace('/v1', '')}/health")
+                        if response.status_code in [200, 404]:  # 404 means server is up but no /health endpoint
+                            logger.info(f"✅ Server health check passed after {(attempt + 1) * check_interval} seconds")
+                            # Additional verification with models endpoint
+                            try:
+                                response = await client.get(f"{self.base_url}/models")
+                                if response.status_code == 200:
+                                    logger.info("✅ Server models endpoint responding")
+                                    return True
+                            except:
+                                pass
+                            return True
+                except Exception as e:
+                    logger.debug(f"Health check failed: {e}")
+                
+                # Periodic progress updates
+                if attempt % 5 == 0 and attempt > 0:  # Every 20 seconds after first check
+                    elapsed = (attempt + 1) * check_interval
+                    logger.info(f"⏳ Still waiting for server... ({elapsed}s elapsed)")
+                    if attempt == 5:  # After 20 seconds, suggest checking logs
+                        logger.info("💡 Check server logs: tail -f /tmp/llama-server.log")
+            
+            logger.error("❌ Server did not come back online within 3 minutes")
+            logger.error("🔧 Manual intervention required - please start your server and try again")
             return False
             
         except Exception as e:
-            logger.error(f"Error during server restart: {e}")
+            logger.error(f"💥 Error during server restart: {e}")
             return False
 
 
