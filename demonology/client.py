@@ -156,6 +156,7 @@ class DemonologyClient:
                 params_content = match.group(2).strip()
                 
                 # Map common malformed function names to correct ones
+                original_function = function_name
                 if function_name in ["_reader", "file", "_explorer", "explorer", "list_files", "directory_list"]:
                     function_name = "file_operations"
                 
@@ -171,13 +172,16 @@ class DemonologyClient:
                                 arguments["operation"] = "read"
                                 arguments["path"] = param_value.strip()
                             elif param_name == "path":
-                                # For _explorer or directory listing, use list operation
+                                # Determine operation based on original function name
                                 path_val = param_value.strip()
-                                if path_val in [".", "./"]:
+                                if original_function in ["list_files", "directory_list", "_explorer", "explorer"]:
                                     arguments["operation"] = "list"
-                                    arguments["path"] = "."
+                                    arguments["path"] = path_val or "."
+                                elif original_function in ["_reader", "file"]:
+                                    arguments["operation"] = "read"
+                                    arguments["path"] = path_val
                                 else:
-                                    # Check if it's likely a file or directory
+                                    # Fallback: Check if it's likely a file or directory
                                     arguments["operation"] = "list" if not path_val.endswith(('.txt', '.md', '.py', '.js', '.json', '.xml', '.html')) else "read"
                                     arguments["path"] = path_val
                             elif param_name == "files":
@@ -200,6 +204,15 @@ class DemonologyClient:
                                 arguments[param_name] = param_value.strip()
                         else:
                             arguments[param_name] = param_value.strip()
+                
+                # Handle file_operations without parameters - set default operation
+                if function_name == "file_operations" and "operation" not in arguments:
+                    if original_function in ["list_files", "directory_list", "_explorer", "explorer"]:
+                        arguments["operation"] = "list"
+                        arguments["path"] = "."
+                    elif original_function in ["_reader", "file"]:
+                        arguments["operation"] = "read"
+                        arguments["path"] = "."
                 
                 # Create OpenAI-style tool call
                 tool_call = {
