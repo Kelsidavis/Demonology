@@ -49,7 +49,7 @@ class FileOperationsTool(Tool):
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "description": "One of: create_or_write_file (alias: write), create_directory, read (alias: read_file), list, delete_file, delete_directory"
+                        "description": "One of: create_or_write_file (aliases: write, write_file), create_directory, read (alias: read_file), list, delete_file, delete_directory"
                     },
                     "path": {"type": "string", "description": "Absolute or relative path"},
                     "content": {"type": "string", "description": "File content for create_or_write_file"},
@@ -62,7 +62,7 @@ class FileOperationsTool(Tool):
     async def execute(self, operation: str, **kwargs) -> Dict[str, Any]:
         try:
             op = (operation or "").strip().lower()
-            if op in ("create_or_write_file", "write"):
+            if op in ("create_or_write_file", "write", "write_file"):
                 return await self._create_or_write_file(kwargs.get("path"), kwargs.get("content", ""))
             if op == "create_directory":
                 return await self._create_directory(kwargs.get("path"))

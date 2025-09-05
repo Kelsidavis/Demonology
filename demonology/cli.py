@@ -842,14 +842,30 @@ Config file: {cfg.config_path}
                 op_match = re.search(r'"operation":\s*"([^"]*)"', arguments_str)
                 if op_match:
                     arguments["operation"] = op_match.group(1)
+                else:
+                    # Default operation when none specified
+                    arguments["operation"] = "list"
                 
                 path_match = re.search(r'"path":\s*"([^"]*)"', arguments_str)
                 if path_match:
                     arguments["path"] = path_match.group(1)
+                else:
+                    # Default path when none specified
+                    arguments["path"] = "."
                 
                 content_match = re.search(r'"content":\s*"([^"]*)"', arguments_str)
                 if content_match:
                     arguments["content"] = content_match.group(1)
+                
+                # Fix common operation name issues
+                if "operation" in arguments:
+                    op = arguments["operation"]
+                    if op in ["list_directory", "list_files", "dir", "ls"]:
+                        arguments["operation"] = "list"
+                    elif op in ["read_file", "cat", "view"]:
+                        arguments["operation"] = "read"
+                    elif op in ["write_file", "create", "save"]:
+                        arguments["operation"] = "create_or_write_file"
                     
             elif function_name == "web_search":
                 query_match = re.search(r'"query":\s*"([^"]*)"', arguments_str)
@@ -1143,22 +1159,31 @@ Config file: {cfg.config_path}
                     system_msg = {
                         "role": "system",
                         "content": (
-                            "You are Demonology, a helpful AI assistant. Respond naturally to conversations. "
-                            "Only use tools when the user explicitly asks you to create, build, search, or work on something specific. "
-                            "For simple greetings, questions, or casual conversation, just respond normally without using tools.\n\n"
-                            "AVAILABLE TOOLS:\n"
-                            "- web_search: Search for general information (requires 'query')\n"
-                            "- reddit_search: Search Reddit discussions and community insights (requires 'query')\n"
-                            "- project_planning: Plan AND build complete projects (requires 'project_name', 'project_description')\n"
-                            "- file_operations: Create/modify individual files (requires 'operation' parameter)\n"
-                            "- code_execution: Run code only when explicitly requested\n\n"
-                            "PROACTIVE BEHAVIOR:\n"
-                            "- Use web_search for general information when uncertain\n"
-                            "- Use reddit_search to find community discussions, opinions, and real user experiences\n"
-                            "- Use project_planning to automatically create complete project structures\n"
-                            "- When asked to 'build' or 'create' a project, use project_planning with execute_plan=true\n"
-                            "- Follow through completely - don't just plan, actually create the files and structure\n\n"
-                            "Always include required parameters and focus on what the user requested."
+                            "You are Demonology, a helpful AI assistant with full system access through 17 powerful tools. "
+                            "Use tools proactively when users ask you to work on files, analyze code, or perform tasks.\n\n"
+                            "CORE TOOLS (use these frequently):\n"
+                            "- file_operations: READ/WRITE/CREATE/DELETE files anywhere (operation='read'/'write'/'list'/'create_directory')\n"
+                            "- codebase_analysis: Analyze code structure, search files, index repositories (operation='tree'/'grep'/'read_chunk')\n"
+                            "- code_execution: Run Python/bash scripts, install packages, execute system commands\n"
+                            "- project_planning: Create complete project structures and continue existing work\n\n"
+                            "ANALYSIS TOOLS:\n"
+                            "- image_analysis: Analyze images, extract text, identify objects\n"
+                            "- image_generation: Create images from descriptions\n"
+                            "- disassembler: Disassemble binary files with objdump/radare2/capstone\n"
+                            "- hex_editor: View/edit binary files in hex format\n"
+                            "- pattern_search: Search for strings/patterns in binaries\n"
+                            "- debugger: Debug binaries with GDB integration\n"
+                            "- ghidra_analysis: Perform deep binary analysis\n\n"
+                            "AUDIO TOOLS:\n"
+                            "- waveform_generator: Generate audio waveforms\n"
+                            "- synthesizer: Advanced audio synthesis with FM/AM\n"
+                            "- audio_analysis: Analyze audio files and extract features\n"
+                            "- midi_tool: Generate and parse MIDI files\n\n"
+                            "WEB TOOLS:\n"
+                            "- web_search: Search for information online\n"
+                            "- reddit_search: Search Reddit discussions\n\n"
+                            "IMPORTANT: When users mention files or ask to analyze/read documentation, USE the file_operations tool with operation='read' or 'list'. "
+                            "Don't say you can't access files - you have full file system access!"
                         )
                     }
                 else:

@@ -15,6 +15,14 @@ from .base import Tool
 logger = logging.getLogger(__name__)
 
 
+def _safe_path(path: str, want_dir: bool = False) -> Path:
+    """Convert string path to safe Path object."""
+    p = Path(path).expanduser().resolve()
+    if want_dir and not p.is_dir():
+        p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 class WaveformGeneratorTool(Tool):
     """Generate basic waveforms (sine, square, sawtooth, triangle)."""
     
@@ -687,6 +695,46 @@ class MIDITool(Tool):
     async def _generate_midi(self, notes: List[Dict], tempo: int, 
                            time_signature: List[int], output_file: str) -> Dict[str, Any]:
         """Generate MIDI file from note data."""
+        # Validate input parameters
+        if tempo < 1 or tempo > 999:
+            return {"success": False, "error": f"Invalid tempo: {tempo}. Must be between 1-999 BPM"}
+        
+        # Validate and clean note data
+        valid_notes = []
+        for i, note_data in enumerate(notes):
+            if not isinstance(note_data, dict):
+                continue
+            
+            note = note_data.get('note', 60)
+            velocity = note_data.get('velocity', 80)
+            start_time = note_data.get('start_time', 0)
+            duration = note_data.get('duration', 1)
+            
+            # Validate MIDI note range (0-127)
+            if not isinstance(note, (int, float)) or note < 0 or note > 127:
+                logger.warning(f"Invalid MIDI note {note} at index {i}, clamping to valid range")
+                note = max(0, min(127, int(note) if isinstance(note, (int, float)) else 60))
+            
+            # Validate velocity (0-127)
+            if not isinstance(velocity, (int, float)) or velocity < 0 or velocity > 127:
+                velocity = max(0, min(127, int(velocity) if isinstance(velocity, (int, float)) else 80))
+            
+            # Validate timing values
+            if not isinstance(start_time, (int, float)) or start_time < 0:
+                start_time = 0
+            if not isinstance(duration, (int, float)) or duration <= 0:
+                duration = 1
+                
+            valid_notes.append({
+                'note': int(note),
+                'velocity': int(velocity), 
+                'start_time': float(start_time),
+                'duration': float(duration)
+            })
+        
+        if not valid_notes:
+            return {"success": False, "error": "No valid notes provided"}
+        
         # Simple MIDI generation without external dependencies
         output_path = _safe_path(output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -715,11 +763,11 @@ class MIDITool(Tool):
         
         # Add notes
         current_time = 0
-        for note_data in notes:
-            note = note_data.get('note', 60)
-            velocity = note_data.get('velocity', 64)
-            start_time = int(note_data.get('start_time', 0) * 480)  # Convert beats to ticks
-            duration = int(note_data.get('duration', 1) * 480)
+        for note_data in valid_notes:
+            note = note_data['note']
+            velocity = note_data['velocity']
+            start_time = int(note_data['start_time'] * 480)  # Convert beats to ticks
+            duration = int(note_data['duration'] * 480)
             
             # Delta time to note on
             delta = start_time - current_time
@@ -749,7 +797,7 @@ class MIDITool(Tool):
             "operation": "generate_midi",
             "output_file": str(output_path),
             "file_size": len(midi_data),
-            "num_notes": len(notes),
+            "num_notes": len(valid_notes),
             "tempo": tempo,
             "time_signature": time_signature
         }

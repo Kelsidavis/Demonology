@@ -59,7 +59,7 @@ YOU HAVE FULL SYSTEM ACCESS THROUGH THESE TOOLS:
 - Tools are your PRIMARY interface - use them first!
 
 Example: Instead of saying "I would check the file...", 
-DO: await file_tool.execute(operation="read", path="./file.txt")
+DO: <tool_call><function=file_operations><parameter=operation>read</parameter><parameter=path>./file.txt</parameter></function></tool_call>
 
 Load tools with: create_default_registry()
 See AGENT_CAPABILITIES.md for detailed usage guide.

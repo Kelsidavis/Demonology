@@ -97,10 +97,14 @@ class DemonologyClient:
             "stream": stream
         }
         
-        # Add tools if provided
+        # Add tools if provided - Re-enabled with grammar workaround
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+            # Add stop sequences to prevent infinite generation
+            payload["stop"] = ["<|endoftext|>", "<|im_end|>", "</s>", "\n\n---"]
+            # Lower max_tokens for tool calls to prevent grammar issues
+            payload["max_tokens"] = min(kwargs.get("max_tokens", self.max_tokens), 2048)
         
         # Add any additional parameters
         for key in ["frequency_penalty", "presence_penalty", "stop"]:
@@ -118,9 +122,10 @@ class DemonologyClient:
         """
         Detect and convert XML-style tool calls (Qwen3 format) to OpenAI format.
         
-        Handles both proper and malformed Qwen3 formats:
+        Handles multiple malformed Qwen3 formats:
         - <tool_call><function=name><parameter=p>v</parameter></function></tool_call>
         - <function=name><parameter=p>v</parameter></function> (missing tool_call wrapper)
+        - <tool_call>name<parameter=p>v</parameter></function></tool_call> (missing function= wrapper)
         - <function=name (missing closing >, malformed)
         - Simple format: <function=name> with no parameters
         
@@ -133,17 +138,95 @@ class DemonologyClient:
         tool_calls = []
         cleaned_content = content
         
-        # First, try to match the full Qwen3 format: <tool_call>...</tool_call>
+        # First, try to match the malformed format: <tool_call>name<parameter=...></parameter></function></tool_call>
+        malformed_pattern = r'<tool_call>\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\n?(.*?)</function>\s*</tool_call>'
+        malformed_matches = list(re.finditer(malformed_pattern, content, re.DOTALL))
+        
+        # Then try standard Qwen3 format: <tool_call><function=name>...</function></tool_call>
         tool_call_pattern = r'<tool_call>\s*<function=([a-zA-Z_][a-zA-Z0-9_]*)\s*>?(.*?)</function>\s*</tool_call>'
         full_matches = list(re.finditer(tool_call_pattern, content, re.DOTALL))
         
-        # If no full matches, look for partial/malformed patterns
-        if not full_matches:
+        # Process malformed matches first (priority over other formats)
+        if malformed_matches:
+            for i, match in enumerate(reversed(malformed_matches)):
+                function_name = match.group(1)
+                params_content = match.group(2).strip()
+                
+                # Map common malformed function names to correct ones
+                if function_name in ["_reader", "file", "_explorer", "explorer", "list_files", "directory_list"]:
+                    function_name = "file_operations"
+                
+                # Parse parameters from format: <parameter=name>value</parameter>
+                arguments = {}
+                if params_content:
+                    param_pattern = r'<parameter=([a-zA-Z_][a-zA-Z0-9_]*)\s*>(.*?)</parameter>'
+                    param_matches = re.findall(param_pattern, params_content, re.DOTALL)
+                    for param_name, param_value in param_matches:
+                        # Map parameter names for file operations
+                        if function_name == "file_operations":
+                            if param_name == "file_path":
+                                arguments["operation"] = "read"
+                                arguments["path"] = param_value.strip()
+                            elif param_name == "path":
+                                # For _explorer or directory listing, use list operation
+                                path_val = param_value.strip()
+                                if path_val in [".", "./"]:
+                                    arguments["operation"] = "list"
+                                    arguments["path"] = "."
+                                else:
+                                    # Check if it's likely a file or directory
+                                    arguments["operation"] = "list" if not path_val.endswith(('.txt', '.md', '.py', '.js', '.json', '.xml', '.html')) else "read"
+                                    arguments["path"] = path_val
+                            elif param_name == "files":
+                                # Handle array of files - just take the first one for now
+                                files_str = param_value.strip()
+                                if files_str.startswith('[') and files_str.endswith(']'):
+                                    # Parse simple JSON array
+                                    try:
+                                        files_list = json.loads(files_str)
+                                        if files_list and isinstance(files_list, list):
+                                            arguments["operation"] = "read"
+                                            arguments["path"] = files_list[0]
+                                    except:
+                                        arguments["operation"] = "read"
+                                        arguments["path"] = files_str
+                                else:
+                                    arguments["operation"] = "read"
+                                    arguments["path"] = files_str
+                            else:
+                                arguments[param_name] = param_value.strip()
+                        else:
+                            arguments[param_name] = param_value.strip()
+                
+                # Create OpenAI-style tool call
+                tool_call = {
+                    "id": f"call_{function_name}_{len(malformed_matches)-i}",
+                    "type": "function",
+                    "function": {
+                        "name": function_name,
+                        "arguments": json.dumps(arguments)
+                    }
+                }
+                tool_calls.append(tool_call)
+                
+                # Remove the malformed tool call from content
+                cleaned_content = cleaned_content[:match.start()] + cleaned_content[match.end():]
+        
+        # If no malformed matches and no full matches, look for partial/malformed patterns
+        elif not full_matches:
             # Look for standalone function calls or malformed ones
             # Pattern handles: <function=name>, <function=name>, <function=name (missing >)
-            # Updated to handle multiple function calls by not matching too greedily
+            # Also handle extremely malformed: <function=name without closing > at end
             function_pattern = r'<function=([a-zA-Z_][a-zA-Z0-9_]*)\s*>?([^<]*?)(?=<function=|</function>|$)'
             partial_matches = list(re.finditer(function_pattern, content, re.DOTALL))
+            
+            # If still no matches, try to catch incomplete function calls at end of content
+            if not partial_matches:
+                incomplete_pattern = r'<function=([a-zA-Z_][a-zA-Z0-9_]*)'
+                incomplete_matches = list(re.finditer(incomplete_pattern, content))
+                
+                if incomplete_matches:
+                    partial_matches = incomplete_matches
             
             if not partial_matches:
                 return content, None
@@ -151,10 +234,25 @@ class DemonologyClient:
             # Process partial matches
             for i, match in enumerate(reversed(partial_matches)):
                 function_name = match.group(1)
-                params_content = match.group(2).strip() if match.group(2) else ""
+                params_content = match.group(2).strip() if len(match.groups()) > 1 and match.group(2) else ""
                 
-                # Simple parsing for malformed cases - assume no parameters for now
-                arguments = {}
+                # Map common function names to correct tool names
+                if function_name == "system_info":
+                    function_name = "code_execution"
+                    arguments = {"language": "bash", "code": "uname -a && lscpu | head -10 && free -h && df -h"}
+                elif function_name == "python_environment_check":
+                    function_name = "code_execution"
+                    arguments = {"language": "python", "code": "import sys; print('Python version:', sys.version)"}
+                elif function_name == "run_code":
+                    function_name = "code_execution"
+                    # Parse parameters if available
+                    arguments = {"language": "python", "code": "print('Hello World')"}
+                elif function_name in ["_explorer", "explorer", "list_files", "directory_list"]:
+                    function_name = "file_operations"
+                    arguments = {"operation": "list", "path": "."}
+                else:
+                    # Simple parsing for malformed cases - assume no parameters for now
+                    arguments = {}
                 
                 # Create OpenAI-style tool call
                 tool_call = {
@@ -410,13 +508,20 @@ class DemonologyClient:
             raise DemonologyAPIError(error_msg) from e
     
     async def test_connection(self) -> bool:
-        """Test if the API endpoint is accessible."""
+        """Test if the API endpoint is accessible and ready for chat."""
         try:
-            # Try a simple completion request
-            messages = [{"role": "user", "content": "Hello"}]
+            # First check if server is responding at all
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{self.base_url}/models")
+                if response.status_code != 200:
+                    return False
+                    
+            # Then test with a minimal chat completion
+            messages = [{"role": "user", "content": "Hi"}]
             response = await self.chat_completion(messages, max_tokens=1)
             return True
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Connection test failed: {e}")
             return False
     
     async def restart_server_and_reconnect(self) -> bool:
@@ -471,7 +576,7 @@ class DemonologyClient:
                     logger.info(f"Restart script completed with code: {result.returncode}")
                     if result.stdout:
                         logger.info(f"Script output: {result.stdout.strip()}")
-                    await asyncio.sleep(5)  # Give server time to start
+                    await asyncio.sleep(10)  # Give server time to start
                 except subprocess.TimeoutExpired:
                     logger.warning("Restart script timed out, but server may still be starting...")
                 except Exception as e:
@@ -480,21 +585,21 @@ class DemonologyClient:
                 logger.info("Restart script not found. Please manually start your server:")
                 logger.info("Run: ./llama-server-stable.sh")
             
-            logger.info("Waiting for server to come back online (checking every 2 seconds)...")
+            logger.info("Waiting for server to come back online (checking every 3 seconds)...")
             
-            # Wait up to 60 seconds for server to come back online
-            for attempt in range(30):  # 30 * 2 = 60 seconds
-                await asyncio.sleep(2)
+            # Wait up to 120 seconds for server to come back online (model loading takes time)
+            for attempt in range(40):  # 40 * 3 = 120 seconds
+                await asyncio.sleep(3)
                 if await self.test_connection():
-                    logger.info(f"Server reconnected after {(attempt + 1) * 2} seconds")
+                    logger.info(f"Server reconnected after {(attempt + 1) * 3} seconds")
                     return True
                     
-                if attempt % 5 == 0:  # Log every 10 seconds
-                    logger.info(f"Still waiting for server... ({(attempt + 1) * 2}s elapsed)")
+                if attempt % 5 == 0:  # Log every 15 seconds
+                    logger.info(f"Still waiting for server... ({(attempt + 1) * 3}s elapsed)")
                     if attempt == 0:
                         logger.info("Check /tmp/llama-server.log for server startup status")
             
-            logger.error("Server did not come back online within 60 seconds")
+            logger.error("Server did not come back online within 120 seconds")
             logger.error("Please manually start your server and try again")
             return False
             

@@ -13,8 +13,8 @@ from dataclasses import dataclass, asdict
 class APIConfig:
     """Configuration for API connection."""
     base_url: str = "http://127.0.0.1:8080/v1"
-    model: str = "Qwen-3-Coder-30B"
-    max_tokens: int = 1024
+    model: str = "qwen3-coder-30b-tools"
+    max_tokens: int = 4096
     temperature: float = 0.7
     top_p: float = 0.95
     timeout: float = 60.0
