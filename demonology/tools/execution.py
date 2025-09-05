@@ -15,7 +15,7 @@ class CodeExecutionTool(Tool):
     """Execute small code snippets in a sandboxed subprocess."""
     
     def __init__(self):
-        super().__init__("code_execution", "⚡ UNRESTRICTED CODE EXECUTION: Run Python scripts, bash commands, install packages, compile programs. Full system command access!")
+        super().__init__("code_execution", "⚡ UNRESTRICTED CODE EXECUTION: Run Python scripts, bash commands, C# programs (if dotnet installed), install packages, compile programs. Full system command access!")
 
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -24,7 +24,7 @@ class CodeExecutionTool(Tool):
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "language": {"type": "string", "description": "python or bash"},
+                    "language": {"type": "string", "description": "python, bash, or csharp (requires dotnet)"},
                     "code": {"type": "string", "description": "Code to execute"},
                     "timeout": {"type": "integer", "description": "Seconds before kill", "default": 15}
                 },
@@ -35,10 +35,12 @@ class CodeExecutionTool(Tool):
     async def execute(self, language: str, code: str, timeout: int = 15, **_) -> Dict[str, Any]:
         try:
             language = (language or "").strip().lower()
-            if language not in {"python", "bash"}:
+            if language not in {"python", "bash", "csharp", "c#"}:
                 return {"success": False, "error": f"Unsupported language: {language}"}
 
-            if language == "bash":
+            if language in {"csharp", "c#"}:
+                return {"success": False, "error": "C# execution requires dotnet or mono to be installed. Install with: sudo apt install dotnet-sdk-8.0"}
+            elif language == "bash":
                 blocked = _blocked(code)
                 if blocked:
                     return {"success": False, "error": blocked}
