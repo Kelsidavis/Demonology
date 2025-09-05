@@ -325,17 +325,17 @@ class SynthesizerTool(Tool):
         idx = 0
         
         # Attack phase
-        if attack_samples > 0:
+        if attack_samples > 0 and idx + attack_samples <= num_samples:
             envelope[idx:idx+attack_samples] = np.linspace(0, 1, attack_samples)
             idx += attack_samples
         
         # Decay phase
-        if decay_samples > 0:
+        if decay_samples > 0 and idx + decay_samples <= num_samples:
             envelope[idx:idx+decay_samples] = np.linspace(1, sustain, decay_samples)
             idx += decay_samples
         
         # Sustain phase
-        if sustain_samples > 0:
+        if sustain_samples > 0 and idx + sustain_samples <= num_samples:
             envelope[idx:idx+sustain_samples] = sustain
             idx += sustain_samples
         

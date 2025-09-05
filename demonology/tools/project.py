@@ -199,7 +199,12 @@ class ProjectPlanningTool(Tool):
         
         if save_to_file:
             # Save to project plan file in the current working directory
-            plan_filename = f"{project_name.replace(' ', '_').lower()}_plan.md"
+            # Extract just the project name part for the filename, not the full path
+            if "/" in project_name or "\\" in project_name:
+                project_base_name = Path(project_name).name
+            else:
+                project_base_name = project_name
+            plan_filename = f"{project_base_name.replace(' ', '_').lower()}_plan.md"
             
             # Always save in current working directory
             try:
