@@ -882,6 +882,22 @@ class DemonologyUI:
         self.console.print(f"[{theme.get_color('info')}]{message}[/]")
         self.console.print()
     
+    def display_warning(self, message: str):
+        """Display a warning message."""
+        theme = self.theme_manager.current_theme
+        
+        formatted_message = f"⚠️  {message}"
+        
+        panel = Panel(
+            Align.center(Text(formatted_message, style=theme.get_style("error.mystical"))),
+            title="[bold yellow]Warning[/bold yellow]",
+            title_align="center",
+            border_style="yellow",
+            padding=(1, 2)
+        )
+        self.console.print(panel)
+        self.console.print()
+    
     def change_theme(self, theme_name: str):
         """Change the current theme."""
         try:
