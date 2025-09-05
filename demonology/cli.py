@@ -1089,7 +1089,15 @@ Config file: {cfg.config_path}
                 if result.get("success", False):
                     self.ui.console.print(f"[bold green]👹 DEMON [{function_name}] BOWS TO YOUR WILL - POWER CHANNELED 👹[/bold green]")
                 else:
-                    self.ui.console.print(f"[bold red]💀 DEMON [{function_name}] DEFIES THE SUMMONING - CURSE BACKFIRED: {result.get('error', 'Ancient evil')} 💀[/bold red]")
+                    error_msg = result.get('error', 'Ancient evil')
+                    self.ui.console.print(f"[bold red]💀 DEMON [{function_name}] DEFIES THE SUMMONING - CURSE BACKFIRED: {error_msg} 💀[/bold red]")
+                    # Log failed tool results for review
+                    self._log_structured_error("tool_result_failed", error_msg, {
+                        "tool_name": function_name,
+                        "tool_arguments": arguments,
+                        "call_id": call_id,
+                        "result": result
+                    })
 
                 tool_results.append({
                     "role": "tool",

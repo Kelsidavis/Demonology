@@ -418,7 +418,7 @@ class DemonologyClient:
                                             if content:
                                                 # Check for excessively long chunks (potential repetition)
                                                 if len(content) > max_chunk_length:
-                                                    logger.warning(f"Detected extremely long chunk ({len(content)} chars), likely repetitive generation")
+                                                    logger.error(f"Detected extremely long chunk ({len(content)} chars), likely repetitive generation")
                                                     break
                                                 
                                                 # Track recent content for repetition detection
@@ -429,7 +429,7 @@ class DemonologyClient:
                                                 # Check if we're in a repetition loop
                                                 if len(repetition_buffer) >= repetition_threshold:
                                                     if len(set(repetition_buffer)) == 1:  # All chunks are identical
-                                                        logger.warning("Detected repetition loop, stopping generation")
+                                                        logger.error("Detected repetition loop, stopping generation")
                                                         break
                                             
                                             yield preprocessed_delta
