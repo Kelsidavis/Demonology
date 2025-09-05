@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 import click
 import logging
+from logging.handlers import RotatingFileHandler
 
 from .client import DemonologyClient, DemonologyAPIError
 from .config import Config
@@ -20,10 +21,53 @@ from .ui import DemonologyUI
 from .themes import ThemeName
 from .tools import ToolRegistry
 
-logging.basicConfig(
-    level=logging.WARNING,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Enhanced logging setup for autonomous coding workflows
+def setup_enhanced_logging():
+    """Setup comprehensive logging with file rotation and error tracking."""
+    log_dir = Path.home() / ".demonology" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Main log file with rotation
+    main_log = log_dir / "demonology.log"
+    main_handler = RotatingFileHandler(
+        main_log, maxBytes=10*1024*1024, backupCount=5  # 10MB files, keep 5
+    )
+    main_handler.setLevel(logging.INFO)
+    
+    # Error-only log for critical issues
+    error_log = log_dir / "errors.log"
+    error_handler = RotatingFileHandler(
+        error_log, maxBytes=5*1024*1024, backupCount=3  # 5MB files, keep 3
+    )
+    error_handler.setLevel(logging.ERROR)
+    
+    # Console handler for immediate feedback
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.WARNING)
+    
+    # Detailed formatter for log files
+    file_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
+    )
+    
+    # Simple formatter for console
+    console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    
+    main_handler.setFormatter(file_formatter)
+    error_handler.setFormatter(file_formatter)
+    console_handler.setFormatter(console_formatter)
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(main_handler)
+    root_logger.addHandler(error_handler)
+    root_logger.addHandler(console_handler)
+    
+    return str(main_log), str(error_log)
+
+# Setup enhanced logging
+MAIN_LOG_PATH, ERROR_LOG_PATH = setup_enhanced_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -39,8 +83,31 @@ class DemonologyApp:
         self._auto_tool_used_this_turn = False  # guard to avoid repeated fallback in one turn
         self._tool_usage_stats = {}  # Track tool usage statistics
         self._session_start_time = time.time()  # Track session duration
+        self._error_count = 0  # Track errors for autonomous debugging
 
         self.tool_registry = ToolRegistry()
+        
+        # Log startup info
+        logger.info(f"Demonology CLI started - Log files: {MAIN_LOG_PATH} (main), {ERROR_LOG_PATH} (errors)")
+
+    def _log_structured_error(self, error_type: str, error_message: str, context: Dict[str, Any] = None):
+        """Log structured error information for autonomous debugging."""
+        self._error_count += 1
+        error_data = {
+            "error_id": self._error_count,
+            "error_type": error_type,
+            "error_message": error_message,
+            "timestamp": time.time(),
+            "session_duration": time.time() - self._session_start_time,
+            "conversation_length": len(self.conversation_history),
+            "context": context or {}
+        }
+        
+        logger.error(f"STRUCTURED_ERROR: {json.dumps(error_data, indent=2)}")
+        
+        # Also log a human-readable version
+        context_str = f" | Context: {context}" if context else ""
+        logger.error(f"Error #{self._error_count} ({error_type}): {error_message}{context_str}")
 
     
 
@@ -78,6 +145,10 @@ class DemonologyApp:
             return False
         except Exception as e:
             await self.ui.stop_loading()
+            self._log_structured_error("connection_failed", str(e), {
+                "base_url": self.config.api.base_url,
+                "model": self.config.api.model_name
+            })
             self.ui.display_error(f"Connection ritual failed: {str(e)}")
             return False
     
@@ -177,6 +248,8 @@ class DemonologyApp:
             asyncio.create_task(self._manual_server_restart())
         elif cmd in ['tools', 'tl']:
             self._show_tools()
+        elif cmd in ['logs', 'log']:
+            self._show_logs()
         elif cmd in ['context', 'ctx', 'c']:
             self._show_context_stats()
         elif cmd in ['trim', 'tr']:
@@ -248,6 +321,7 @@ class DemonologyApp:
 /debug, /dbg          Debug API response
 /restart, /rs         Restart llama server and clear VRAM
 /tools, /tl           List available tools
+/logs, /log           Show log file locations for error review
 
 [bold]Context Management:[/bold]
 /context, /ctx, /c    Show context usage statistics
@@ -519,6 +593,17 @@ Config file: {cfg.config_path}
         if self.config.tools.enabled:
             openai_tools = self.tool_registry.to_openai_tools_format()
             self.ui.console.print(f"[dim]Total tools sent to model: {len(openai_tools)}[/dim]")
+    
+    def _show_logs(self):
+        """Display log file locations for debugging."""
+        self.ui.display_info(f"📋 Log Files for Error Review:")
+        self.ui.display_info(f"  • Main log: {MAIN_LOG_PATH}")
+        self.ui.display_info(f"  • Errors only: {ERROR_LOG_PATH}")
+        self.ui.display_info(f"  • Session errors: {self._error_count}")
+        
+        # Show recent error if any
+        if self._error_count > 0:
+            self.ui.display_info(f"\n💡 Tip: Use 'tail -f {ERROR_LOG_PATH}' to monitor errors in real-time")
 
     # ---------------- Heuristic fallback for NL commands ---------------------
 
@@ -658,6 +743,10 @@ Config file: {cfg.config_path}
                                 tool_calls[index]["function"]["arguments"] += function_data["arguments"]
 
         except Exception as e:
+            self._log_structured_error("streaming_response_failed", str(e), {
+                "error_type": type(e).__name__,
+                "conversation_length": len(self.conversation_history)
+            })
             logger.exception("Error processing streaming response")
             await self.ui.stop_loading()  # Ensure loading stops on error
             
@@ -1009,6 +1098,11 @@ Config file: {cfg.config_path}
                 })
 
             except Exception as e:
+                self._log_structured_error("tool_execution_failed", str(e), {
+                    "tool_name": function_name,
+                    "tool_arguments": arguments,
+                    "call_id": call_id
+                })
                 self.ui.console.print(f"[red]✗ {function_name} error: {str(e)}[/red]")
                 tool_results.append({
                     "role": "tool",
