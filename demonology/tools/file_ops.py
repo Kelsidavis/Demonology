@@ -49,7 +49,7 @@ class FileOperationsTool(Tool):
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "description": "One of: create_or_write_file (aliases: write, write_file), create_directory, read (alias: read_file), list, delete_file, delete_directory"
+                        "description": "One of: create_or_write_file (aliases: write, write_file), create_directory, read (alias: read_file), list (aliases: list_files, list_directory), info (aliases: get_file_info, file_info), delete_file, delete_directory"
                     },
                     "path": {"type": "string", "description": "Absolute or relative path"},
                     "content": {"type": "string", "description": "File content for create_or_write_file"},
@@ -68,8 +68,10 @@ class FileOperationsTool(Tool):
                 return await self._create_directory(kwargs.get("path"))
             if op in ("read", "read_file"):
                 return await self._read_file(kwargs.get("path"))
-            if op == "list":
+            if op in ("list", "list_files", "list_directory", "list_dir"):  # Support commonly used aliases
                 return await self._list_directory(kwargs.get("path", "."))
+            if op in ("info", "get_file_info", "file_info", "get_info"):  # Add file info operation
+                return await self._get_file_info(kwargs.get("path"))
             if op == "delete_file":
                 return await self._delete_file(kwargs.get("path"))
             if op == "delete_directory":
@@ -167,3 +169,34 @@ class FileOperationsTool(Tool):
             return {"success": False, "error": "Directory is not empty", "path": str(d)}
         d.rmdir()
         return {"success": True, "operation": "delete_directory", "path": str(d), "recursive": False, "deleted": True}
+
+    async def _get_file_info(self, path: Optional[str]) -> Dict[str, Any]:
+        """Get information about a file or directory."""
+        if not path:
+            return {"success": False, "error": "Missing 'path' for get_file_info"}
+        p = self._safe_path(path)
+        if not p.exists():
+            return {"success": False, "error": f"Path not found: {p}"}
+        
+        try:
+            stat = p.stat()
+            info = {
+                "name": p.name,
+                "path": str(p),
+                "is_dir": p.is_dir(),
+                "is_file": p.is_file(),
+                "size": stat.st_size if p.is_file() else None,
+                "modified_time": stat.st_mtime,
+                "permissions": oct(stat.st_mode)[-3:],
+            }
+            
+            # If it's a directory, also include item count
+            if p.is_dir():
+                try:
+                    info["item_count"] = len(list(p.iterdir()))
+                except Exception:
+                    info["item_count"] = "unknown"
+                    
+            return {"success": True, "operation": "get_file_info", "info": info}
+        except Exception as e:
+            return {"success": False, "error": f"Error getting info: {str(e)}"}

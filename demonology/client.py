@@ -475,9 +475,28 @@ class DemonologyClient:
                                             # Repetition detection for autonomous coding reliability
                                             content = preprocessed_delta.get("content", "")
                                             if content:
+                                                # CRITICAL: Detect single character repetition immediately
+                                                # Keep track of recent single characters to detect loops
+                                                if len(content) == 1:
+                                                    if not hasattr(self, '_single_char_buffer'):
+                                                        self._single_char_buffer = []
+                                                    self._single_char_buffer.append(content)
+                                                    if len(self._single_char_buffer) > 10:
+                                                        self._single_char_buffer.pop(0)
+                                                    
+                                                    # If we have 5+ identical single characters, it's a loop
+                                                    if len(self._single_char_buffer) >= 5 and len(set(self._single_char_buffer[-5:])) == 1:
+                                                        logger.error(f"CRITICAL: Single character repetition loop detected - '{content}' - stopping immediately")
+                                                        break
+                                                
                                                 # Check for excessively long chunks (potential repetition)
                                                 if len(content) > max_chunk_length:
                                                     logger.error(f"Detected extremely long chunk ({len(content)} chars), likely repetitive generation")
+                                                    break
+                                                
+                                                # Check for immediate same-character repetition in chunk
+                                                if len(content) > 10 and len(set(content.strip())) == 1:
+                                                    logger.error(f"CRITICAL: Same character repetition in chunk - '{content[:20]}...' - stopping immediately")
                                                     break
                                                 
                                                 # Only track chunks with meaningful content for repetition detection
