@@ -84,6 +84,8 @@ class DemonologyApp:
         self._tool_usage_stats = {}  # Track tool usage statistics
         self._session_start_time = time.time()  # Track session duration
         self._error_count = 0  # Track errors for autonomous debugging
+        self._repetition_count = 0  # Track repetition loops
+        self._last_repetition_time = 0  # Track when last repetition occurred
 
         self.tool_registry = ToolRegistry()
         
@@ -108,6 +110,34 @@ class DemonologyApp:
         # Also log a human-readable version
         context_str = f" | Context: {context}" if context else ""
         logger.error(f"Error #{self._error_count} ({error_type}): {error_message}{context_str}")
+
+    def _handle_repetition_recovery(self):
+        """Handle repetition loop recovery strategies."""
+        current_time = time.time()
+        self._repetition_count += 1
+        
+        # If we've had multiple repetitions in a short time, apply aggressive recovery
+        time_since_last = current_time - self._last_repetition_time
+        self._last_repetition_time = current_time
+        
+        if time_since_last < 60 and self._repetition_count > 3:  # 3+ loops in 1 minute
+            logger.warning(f"Frequent repetition detected ({self._repetition_count} loops), applying recovery strategies")
+            
+            # Strategy 1: Trim conversation aggressively
+            if len(self.conversation_history) > 10:
+                self.ui.display_warning("🔄 Trimming conversation history to break repetition pattern")
+                self._trim_conversation_smart()
+            
+            # Strategy 2: Force a different approach message
+            recovery_msg = {
+                "role": "system",
+                "content": "SYSTEM: Previous response got stuck in repetition. Please provide a different approach or ask for clarification."
+            }
+            self.conversation_history.append(recovery_msg)
+            
+            return True  # Applied recovery
+        
+        return False  # No recovery needed
 
     
 
@@ -743,6 +773,14 @@ Config file: {cfg.config_path}
                                 tool_calls[index]["function"]["arguments"] += function_data["arguments"]
 
         except Exception as e:
+            # Check if this is a repetition-related error
+            if "repetition loop" in str(e).lower() or "repetitive generation" in str(e).lower():
+                recovery_applied = self._handle_repetition_recovery()
+                if recovery_applied:
+                    self.ui.display_info("🔄 Applied repetition recovery - retrying with modified context")
+                    await self.ui.stop_loading()
+                    return  # Let the caller retry
+            
             self._log_structured_error("streaming_response_failed", str(e), {
                 "error_type": type(e).__name__,
                 "conversation_length": len(self.conversation_history)

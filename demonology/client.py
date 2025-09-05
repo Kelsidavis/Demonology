@@ -85,17 +85,28 @@ class DemonologyClient:
         messages: List[Dict[str, str]],
         stream: bool = True,
         tools: Optional[List[Dict[str, Any]]] = None,
+        repetition_penalty: float = None,
         **kwargs
     ) -> Dict[str, Any]:
         """Build the request payload for the API."""
+        # Apply anti-repetition settings if specified
+        temperature = kwargs.get("temperature", self.temperature)
+        if repetition_penalty:
+            temperature = min(1.0, temperature + 0.3)  # Increase randomness
+        
         payload = {
             "model": kwargs.get("model", self.model),
             "messages": messages,
             "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-            "temperature": kwargs.get("temperature", self.temperature),
+            "temperature": temperature,
             "top_p": kwargs.get("top_p", self.top_p),
             "stream": stream
         }
+        
+        # Add repetition penalty if provided
+        if repetition_penalty:
+            payload["frequency_penalty"] = repetition_penalty
+            payload["presence_penalty"] = 0.6  # Discourage repeated topics
         
         # Add tools if provided - Re-enabled with grammar workaround
         if tools:
@@ -117,6 +128,29 @@ class DemonologyClient:
         """Apply exponential backoff with jitter for retry attempts."""
         delay = self.retry_delay * (2 ** attempt) + random.uniform(0, 1)
         await asyncio.sleep(delay)
+    
+    def _detect_similar_patterns(self, buffer: List[str], threshold: float) -> bool:
+        """Detect if content buffer contains similar patterns (not just exact matches)."""
+        if len(buffer) < 2:
+            return False
+        
+        # Simple similarity check based on character overlap
+        for i in range(len(buffer)):
+            for j in range(i + 1, len(buffer)):
+                if self._calculate_similarity(buffer[i], buffer[j]) > threshold:
+                    return True
+        return False
+    
+    def _calculate_similarity(self, str1: str, str2: str) -> float:
+        """Calculate similarity ratio between two strings."""
+        if not str1 or not str2:
+            return 0.0
+        
+        # Simple character-based similarity
+        set1, set2 = set(str1.lower()), set(str2.lower())
+        intersection = len(set1 & set2)
+        union = len(set1 | set2)
+        return intersection / union if union > 0 else 0.0
     
     def _detect_and_convert_xml_tool_calls(self, content: str) -> tuple[str, Optional[List[Dict[str, Any]]]]:
         """
@@ -367,10 +401,12 @@ class DemonologyClient:
         
         Yields response chunks (content or tool calls) as they arrive.
         """
-        # Repetition detection for autonomous coding reliability
+        # Enhanced repetition detection for autonomous coding reliability
         repetition_buffer = []
-        repetition_threshold = 5  # Number of identical chunks before stopping
-        max_chunk_length = 1000   # Prevent excessively long repetitive chunks
+        repetition_threshold = 3  # Reduced from 5 - catch loops faster
+        max_chunk_length = 500    # Reduced from 1000 - catch sooner
+        pattern_buffer = []       # Track patterns, not just identical chunks
+        similarity_threshold = 0.8  # Detect similar (not just identical) content
         url = f"{self.base_url}/chat/completions"
         payload = self._build_request_payload(messages, stream=True, tools=tools, **kwargs)
         
@@ -426,10 +462,16 @@ class DemonologyClient:
                                                 if len(repetition_buffer) > repetition_threshold:
                                                     repetition_buffer.pop(0)
                                                 
-                                                # Check if we're in a repetition loop
+                                                # Enhanced repetition detection
                                                 if len(repetition_buffer) >= repetition_threshold:
-                                                    if len(set(repetition_buffer)) == 1:  # All chunks are identical
-                                                        logger.error("Detected repetition loop, stopping generation")
+                                                    # Check for exact repetition
+                                                    if len(set(repetition_buffer)) == 1:
+                                                        logger.error(f"CRITICAL: Exact repetition loop detected - '{repetition_buffer[0][:50]}...'")
+                                                        break
+                                                    
+                                                    # Check for pattern repetition (similar content)
+                                                    if self._detect_similar_patterns(repetition_buffer, similarity_threshold):
+                                                        logger.error(f"CRITICAL: Pattern repetition loop detected in last {repetition_threshold} chunks")
                                                         break
                                             
                                             yield preprocessed_delta
