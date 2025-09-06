@@ -1,18 +1,37 @@
 # Demonology CLI Dependencies
-# Core dependencies for running Demonology
+# Updated to cover media tools, audio/DSP, and optional RE/OCR integrations.
 
-# HTTP client for web requests and API calls
-httpx>=0.25.0
-requests>=2.28.0
+# --- Core runtime ---
+httpx>=0.27.0
+requests>=2.32.0
+rich>=13.7.0
+click>=8.1.7
+pyyaml>=6.0.1
 
-# Terminal UI and styling
-rich>=13.0.0
+# --- Media / Imaging ---
+Pillow>=10.3.0    # used by media.ImageAnalysisTool
 
-# CLI framework
-click>=8.0.0
+# --- Audio / DSP (for audio.py) ---
+numpy>=1.26.0
+scipy>=1.11.0
+matplotlib>=3.8.0
 
-# Configuration file support
-pyyaml>=6.0.0
+# --- Optional: Web search helpers ---
+# Our built-in web tools use httpx directly, so these are optional.
+# duckduckgo-search>=5.3.1
 
-# Optional: Reddit API wrapper (for enhanced Reddit search with credentials)
-# praw>=7.6.0
+# --- Optional: Reverse engineering ---
+# Enable YARA pattern scans in reverse_eng.PatternSearchTool(search_type="yara")
+# yara-python>=4.4.0
+
+# --- Optional: OCR ---
+# If you later add OCR to ImageAnalysisTool:
+# pytesseract>=0.3.10   # also install system package: tesseract-ocr
+
+# --- Optional: Reddit (authenticated) ---
+# praw>=7.7.1
+
+# --- Optional: Dev / QA ---
+# pytest>=8.0.0
+# black>=24.4.0
+# mypy>=1.10.0

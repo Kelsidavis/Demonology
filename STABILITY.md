@@ -1,129 +1,80 @@
-# 🛡️ Demonology Ultra-Stability System
+# 🛡️ Demonology Ultra‑Stability System (Updated)
 
-Complete stability and auto-restart solution for uninterrupted llama server sessions.
+This document reflects the current **client**, **UI**, and **supervisor** behavior you have in this repo.
 
-## 🔧 Client-Side Improvements (Demonology)
+## 🔧 Client‑Side (Demonology)
 
-### Enhanced Connection Handling
-- **Automatic Retry Logic**: Exponential backoff with jitter (up to 5 retries)
-- **Extended Timeouts**: 4x longer read timeouts for streaming responses (720s total)
-- **Connection Pooling**: HTTP keep-alive connections with 5-minute expiry
-- **Heartbeat Monitoring**: Detects stalled connections (120s timeout)
-- **HTTP/2 Fallback**: Uses HTTP/2 if available, falls back to HTTP/1.1
+### Connection & Streaming
+- **SSE heartbeat** (default **120s**) with configurable timeout (`api.sse_heartbeat_timeout`).
+- **429 handling** with `Retry-After` honor + exponential backoff.
+- **Explicit Accept headers** for streaming (`text/event-stream`) and JSON.
+- **Configurable retries/timeouts** (see *Tunables* below).
 
-### Intelligent Context Management
-- **Accurate Context Tracking**: 26768 tokens (matches your server config)
-- **Smart Auto-Trimming**: Preserves recent + important messages at 85% usage
-- **Real-time Monitoring**: Color-coded warnings (Green/Yellow/Red)
-- **Context Commands**: `/context`, `/optimize`, `/trim smart`
+### Context Management
+- **Context length**: 26,768 tokens with a **2048 buffer**.
+- **Smart auto‑trimming** kicks in at **85%** of available context, preserving recent/important messages.
+- `/context`, `/optimize`, `/trim smart` available in the CLI.
 
-### Automatic Server Restart
-- **Connection Health Check**: Tests server on startup
-- **Auto-Restart on Failure**: Detects 500 errors and connection issues
-- **VRAM Clearing**: Kills processes + GPU reset if available
-- **Manual Restart**: `/restart` command for immediate server restart
+### Optional Server Restart (Opt‑in)
+- Client exposes a guarded restart hook controlled by `api.allow_server_restart` (default **false**).
+- If enabled *and* `LLAMA_RESTART_SCRIPT` is set, the client triggers the same restart path as the supervisor.
+- Heavy actions like GPU resets are **not** performed by the client—keep them in your server script/supervisor.
 
-## 🚀 Server-Side Improvements (llama.cpp)
+### CLI & TUI Stability QoL
+- **CLI history** (Unix ↑/↓ via readline) and **`/history [N]`** popover everywhere.
+- **Scrollback limit** in TUI (env `DEMONOLOGY_SCROLLBACK_LIMIT`, default **400**) to keep rendering smooth.
+- Throttled layout updates and Windows‑safe imports in the TUI.
 
-### Production Server Script: `llama-server-nosudo.sh` ✅
+## 🚀 Server‑Side (llama.cpp + scripts)
 
-#### Memory & Performance Optimization
-- **Continuous Batching**: `--cont-batching` for efficient memory usage
-- **Memory Defragmentation**: `--defrag-thold 0.1` prevents fragmentation
-- **Optimized Cache**: f16 cache types for better memory efficiency
-- **Parallel Processing**: 8 parallel slots for better throughput
-- **NUMA Optimization**: `--numa isolate` for better GPU utilization
+### Main Server Script: `llama-server-nosudo.sh` ✅
+- Continuous batching, defrag threshold, parallel slots, NUMA isolation, f16 caches, dual‑GPU offload.
+- Runs without sudo and handles graceful shutdown.
 
-#### Multi-GPU Support
-- **Dual GPU**: Automatically uses RTX 5080 + RTX 3060
-- **Layer Splitting**: Optimized layer distribution across GPUs
-- **VRAM Optimization**: 50 layers offloaded to GPU
+### Supervisor: `auto-restart-server_patched.sh` ✅ (Recommended)
+- **Single‑instance** via `flock`.
+- Health checks against **/health** with fallback **/v1/models**.
+- **Rate‑limited restarts** with **exponential backoff** (avoid flapping).
+- Optional launch/monitoring of the **Demonology** client.
+- Logs to `~/.cache/demonology/auto-restart/auto-restart.log`.
+- Exports `LLAMA_RESTART_SCRIPT` for the client’s optional restart hook.
 
-#### Process Management
-- **No Sudo Required**: User-level optimizations only
-- **Graceful Shutdown**: Proper signal handling and cleanup
-- **Background Operation**: Runs via nohup for stability
+> You can still use the simpler `restart-llama.sh`, but the patched supervisor is the production choice.
 
-### Automatic Restart System: `restart-llama.sh`
-- **Process Cleanup**: `pkill -f llama-server`
-- **VRAM Clearing**: GPU memory reset if nvidia-smi available
-- **Background Launch**: Starts server via nohup with logging
-- **Status Logging**: Output to `/tmp/llama-server.log`
+## ⚙️ Tunables (config.yaml)
 
-## 🎯 Usage Instructions
-
-### 🚀 **Recommended Setup** (Fully Automated)
-
-**Step 1: Start the Server**
-```bash
-cd /home/k/Desktop/Demonology
-./llama-server-nosudo.sh
-```
-
-**Step 2: Launch Demonology** (in separate terminal)
-```bash
-demonology
-```
-
-### 🔄 **Alternative: Full Auto-Restart Manager**
-```bash
-# Starts server + Demonology with continuous monitoring:
-./auto-restart-server.sh
-```
-Features:
-- Monitors server health every 30 seconds
-- Restarts server automatically if it crashes  
-- Rate limits restarts to prevent loops
-- Launches Demonology client automatically
-
-### ⚙️ **Configuration**
-Your `config.yaml` now includes:
 ```yaml
 api:
-  timeout: 180.0      # 3 minutes
-  max_retries: 5      # More attempts
-  retry_delay: 3.0    # Longer delays
+  timeout: 60.0
+  max_retries: 3
+  retry_delay: 2.0
+  sse_heartbeat_timeout: 120.0
+  allow_server_restart: false
+ui:
+  auto_save_conversations: true
+tools:
+  enabled: true
+# See AGENT_CAPABILITIES.md / TOOLS.md for tool toggles
 ```
 
-### 📋 **New Commands**
-- **`/restart`**: Manually restart server and clear VRAM 
-- **`/context`**: Show detailed context usage statistics
-- **`/optimize`**: Intelligent context optimization 
-- **`/trim smart`**: Smart context trimming
+**Environment (optional)**
+```
+DEMONOLOGY_HISTORY_MAX=1000
+DEMONOLOGY_SCROLLBACK_LIMIT=400
+DEMONOLOGY_HTTP_TIMEOUT=15
+DEMONOLOGY_HTTP_RETRIES=2
+DEMONOLOGY_HTTP_BACKOFF=0.6
+```
 
-### ✅ **Expected Behavior**
-- **Startup Health Check**: Automatically checks server on launch, restarts if needed
-- **Automatic Recovery**: Client will retry on 500 errors and attempt server restart
-- **Better Error Messages**: Shows attempt counts and retry info  
-- **Longer Sessions**: Much more stable long-running conversations
-- **Connection Reuse**: Faster subsequent requests via keep-alive
-- **VRAM Management**: Automatically clears VRAM on server restarts
+## 🧪 Expected Behavior
+- Long‑running sessions with fewer stalls; automatic recovery from transient network errors.
+- Clear retries/backoff in logs; CLI remains responsive thanks to trimmed scrollback.
+- If the server becomes unhealthy, the supervisor restarts it with backoff and rate limiting.
 
 ## 🚨 Troubleshooting
+1. **Server not ready** → check supervisor log at `~/.cache/demonology/auto-restart/auto-restart.log`.
+2. **Context pressure** → run `/context` then `/optimize` or `/trim smart`.
+3. **Frequent restarts** → raise `CHECK_INTERVAL` and/or reduce model size; verify GPU VRAM.
+4. **Client restart permissions** → ensure `allow_server_restart: true` **and** `LLAMA_RESTART_SCRIPT` is exported if you want the CLI command to act.
 
-### If You Still Experience Issues:
-
-1. **Check Server Logs**: The enhanced script provides detailed startup info
-2. **Monitor System Resources**: Ensure adequate RAM/VRAM for your model
-3. **Network Issues**: Check for firewall or network configuration problems
-4. **Model Size**: Large models may need even longer timeouts
-
-### Advanced Tweaking:
-- Increase `timeout` in config.yaml for very slow responses
-- Adjust `max_retries` and `retry_delay` for your network conditions
-- Modify server script timeouts if needed
-
-## 📊 Performance Impact
-
-### Benefits:
-- ✅ Much more stable long sessions
-- ✅ Automatic error recovery
-- ✅ Better connection reuse
-- ✅ Reduced disconnection frequency
-
-### Trade-offs:
-- ⚠️ Slightly slower initial connection setup
-- ⚠️ Higher memory usage on server
-- ⚠️ More aggressive system optimization
-
-These changes should dramatically improve your session stability while maintaining excellent performance for your Qwen3 30B model.
+_Last updated: 2025-09-06_

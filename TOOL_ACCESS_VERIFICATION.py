@@ -1,116 +1,111 @@
 #!/usr/bin/env python3
 """
-Tool Access Verification Script for AI Agents
+Tool Access Verification Script (patched)
 
-Run this script to verify your tool access and see exactly what you can do.
-This is your proof that you have full system capabilities.
+- Aligns with the current ToolRegistry API.
+- Prints a truthful, workspace-aware capability summary.
+- Gracefully skips tools that aren't registered on this host.
 """
 
 import asyncio
 import sys
 from pathlib import Path
-from demonology.tools import create_default_registry, remind_agent_capabilities
+
+try:
+    # Core registry helpers you ship
+    from demonology.tools import create_default_registry, load_report
+except Exception as e:
+    print(f"❌ Cannot import tool registry: {e}")
+    sys.exit(1)
 
 
-async def verify_tool_access():
-    """Verify that all tools are accessible and demonstrate capabilities."""
+async def verify_tool_access() -> int:
     print("🚀 DEMONOLOGY TOOL ACCESS VERIFICATION")
-    print("=" * 50)
-    
+    print("=" * 54)
+
     # Create tool registry
     registry = create_default_registry()
-    tools = registry.list_available_tools()
-    
-    print(f"✅ Registry created successfully with {len(tools)} tools available\n")
-    
-    print("🔧 AVAILABLE TOOLS:")
-    print("-" * 20)
-    for tool in tools:
-        print(f"  • {tool.name}: {tool.description}")
-    
-    print("\n🧪 TESTING CORE CAPABILITIES:")
-    print("-" * 30)
-    
-    # Test file operations
-    print("📁 Testing file operations...")
+
+    # Load report (what loaded vs. skipped)
     try:
-        file_result = await registry.execute_tool(
-            "file_operations", 
-            operation="list", 
-            path="."
-        )
-        if file_result["success"]:
-            file_count = len(file_result.get("items", []))
-            print(f"   ✅ File listing successful - found {file_count} items")
-        else:
-            print(f"   ❌ File operation failed: {file_result.get('error')}")
-    except Exception as e:
-        print(f"   ❌ File operation error: {e}")
-    
-    # Test code execution
-    print("⚡ Testing code execution...")
+        report = load_report(registry)
+    except Exception:
+        report = None
+
+    # List tools
     try:
-        code_result = await registry.execute_tool(
-            "code_execution",
-            language="python",
-            code="print('Hello from executed Python code!'); import os; print(f'Current dir: {os.getcwd()}')"
-        )
-        if code_result["success"]:
-            print("   ✅ Python execution successful")
-            print(f"   📤 Output: {code_result['stdout'].strip()}")
-        else:
-            print(f"   ❌ Code execution failed: {code_result.get('error')}")
-    except Exception as e:
-        print(f"   ❌ Code execution error: {e}")
-    
-    # Test codebase analysis
-    print("🔍 Testing codebase analysis...")
-    try:
-        analysis_result = await registry.execute_tool(
-            "codebase_analysis",
-            operation="tree",
-            path=".",
-            depth=2,
-            max_entries=10
-        )
-        if analysis_result["success"]:
-            item_count = len(analysis_result.get("items", []))
-            print(f"   ✅ Codebase analysis successful - analyzed {item_count} items")
-        else:
-            print(f"   ❌ Codebase analysis failed: {analysis_result.get('error')}")
-    except Exception as e:
-        print(f"   ❌ Codebase analysis error: {e}")
-    
-    print("\n🎯 CAPABILITY SUMMARY:")
-    print("-" * 20)
-    print("✅ Full filesystem access - read/write anywhere")
-    print("✅ Unrestricted code execution - Python, bash, compilation")  
-    print("✅ Deep codebase analysis - index, search, explore")
-    print("✅ Project management - create, plan, analyze")
-    print("✅ Media processing - generate/analyze images")
-    print("✅ Reverse engineering - disassemble, debug, analyze")
-    print("✅ Audio synthesis - generate music, waveforms")
-    print("✅ Web integration - search, APIs, content")
-    
-    print("\n🚨 REMEMBER FOR AI AGENTS:")
-    print("-" * 25)
-    print("• You HAVE these capabilities - use them!")
-    print("• No safe_root restrictions - work anywhere!")
-    print("• Don't simulate - actually execute tools!")
-    print("• Tools are your PRIMARY interface!")
-    
-    print("\n📖 For detailed usage: See AGENT_CAPABILITIES.md")
-    print("🔄 Run this script anytime you need a capability reminder!")
+        tool_names = list(registry.list())
+    except Exception:
+        # fallback if registry exposes a different method
+        tool_names = getattr(registry, "list_available_tools", lambda: [])()
+
+    print(f"✅ Registry initialized with {len(tool_names)} tool(s) available\n")
+    if report:
+        print("🔎 Loader report (summary):")
+        for k, v in report.items():
+            print(f"  • {k}: {v}")
+        print()
+
+    # Helper to run a tool if present
+    async def maybe_call(name: str, **kwargs):
+        if name not in tool_names:
+            print(f"   ◌ Skipping {name} (not registered)")
+            return None
+        try:
+            res = await registry.call(name, **kwargs)
+            ok = bool(res.get("success"))
+            status = "✅" if ok else "❌"
+            print(f"   {status} {name}")
+            if not ok:
+                print(f"      ↳ error: {res.get('error')}")
+            return res
+        except Exception as e:
+            print(f"   ❌ {name} raised: {e}")
+            return None
+
+    print("🧪 CORE CAPABILITIES")
+    print("-" * 22)
+
+    print("📁 File operations…")
+    await maybe_call("file_operations", operation="list", path=".")
+
+    print("⚡ Code execution (Python)…")
+    await maybe_call("code_execution", language="python",
+                     code="print('Hello from Demonology'); import os; print(os.listdir('.'))")
+
+    print("🔍 Codebase analysis (tree)…")
+    await maybe_call("codebase_analysis", operation="tree", path=".", depth=2, max_entries=10)
+
+    # Optional web queries (skip silently if not registered)
+    print("🌐 Web search (optional)…")
+    await maybe_call("wikipedia_search", query="A minor chord", limit=1)
+    await maybe_call("open_web_search", query="vector search evaluation", limit_per_source=2, include_ddg=False)
+
+    # Optional RE checks
+    print("🧩 Reverse‑engineering (optional)…")
+    await maybe_call("disassembler", binary_path="./bin/app", tool="objdump", section=".text")
+    await maybe_call("hex_editor", file_path="./bin/app", operation="info")
+
+    # Optional audio check (will no-op if not enabled)
+    print("🎵 Audio synthesis (optional)…")
+    await maybe_call("described_sfx", text="a short soft whoosh", duration=1.2)
+
+    print("\n🎯 CAPABILITY SUMMARY (current host)")
+    print("-" * 36)
+    print("• Filesystem: access within your configured workspace root (or wider, if configured).")
+    print("• Execution: Python/Bash snippets with timeouts.")
+    print("• Codebase: tree/grep utilities for large repos.")
+    print("• Web: free backends (Wikipedia/HN/SO/OpenWeb) when registered.")
+    print("• RE: objdump/r2/GDB/Ghidra (if installed on host and registered).")
+    print("• Audio: waveform/synth/analysis/described SFX.")
+    print("\n📖 See AGENT_CAPABILITIES.md and TOOLS.md for details.")
+
+    return 0
 
 
 if __name__ == "__main__":
-    print("🤖 AI Agent Tool Verification Starting...\n")
     try:
-        asyncio.run(verify_tool_access())
+        raise SystemExit(asyncio.run(verify_tool_access()))
     except KeyboardInterrupt:
         print("\n⚠️  Verification interrupted by user")
-    except Exception as e:
-        print(f"\n❌ Verification failed: {e}")
-        sys.exit(1)
-    
-    print("\n✅ Verification complete - you have full tool access!")
+        raise SystemExit(130)

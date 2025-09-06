@@ -33,16 +33,6 @@ echo "GPU Split: layer mode across GPUs (auto)"
 echo "Threads: $THREADS | Batch: $BATCH_SIZE"
 echo "Parallel Slots: $PARALLEL | Keep-Alive: ${KEEP_ALIVE}s"
 echo "Cache: ${CACHE_TYPE_K}/${CACHE_TYPE_V} (quantized) | Flash Attention: Enabled"
-echo "=========================================="
-echo "🛡️  STABILITY & MEMORY ENHANCEMENTS ACTIVE"
-echo "• Continuous batching enabled"
-echo "• Enhanced cache quantization (K:bf16, V:bf16)"
-echo "• Flash Attention optimization enabled"
-echo "• Connection keep-alive enabled"
-echo "• NUMA optimization enabled"
-echo "=========================================="
-echo "🎬 Starting ultra-stable server… (Ctrl+C to stop)"
-echo
 
 # Set user-level optimizations (no sudo required)
 echo "🔧 Applying user-level optimizations..."
@@ -73,7 +63,7 @@ exec "$LLAMA_BIN" \
   -m "$MODEL_PATH" \
   --host 0.0.0.0 \
   --port 8080 \
-  -c "$CONTEXT" \
+  --ctx-size "$CONTEXT" \
   --batch-size "$BATCH_SIZE" \
   -ngl "$NGL" \
   --main-gpu 1 \
@@ -100,7 +90,6 @@ exec "$LLAMA_BIN" \
 SERVER_PID=$!
 
 echo "🟢 Server started with PID: $SERVER_PID"
-echo "📊 Monitoring server health..."
 
 # Wait for the server process
 wait "$SERVER_PID"

@@ -11,6 +11,12 @@ import re
 import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
+import platform
+from collections import deque
+try:
+    import readline  # optional on Windows
+except Exception:
+    readline = None
 import click
 import logging
 from logging.handlers import RotatingFileHandler
@@ -19,7 +25,89 @@ from .client import DemonologyClient, DemonologyAPIError
 from .config import Config
 from .ui import DemonologyUI
 from .themes import ThemeName
-from .tools import ToolRegistry
+from .tools import ToolRegistry, create_default_registry
+
+# ---- injected safety helpers ----
+def _json_loads_tolerant(s: str):
+    """
+    Tolerant JSON parser:
+    - first try json.loads
+    - then try minor repairs (strip trailing commas, fix unbalanced braces/brackets, swap single to double quotes if safe)
+    - final attempt: wrap in {} if it looks like key:value pairs without braces
+    Returns (obj, error) where obj is dict or None.
+    """
+    import json, re
+    def _try(txt):
+        try:
+            return json.loads(txt), None
+        except Exception as e:
+            return None, str(e)
+
+    obj, err = _try(s)
+    if obj is not None:
+        return obj, None
+
+    t = s.strip()
+
+    # If looks like key:value pairs without outer braces, add them
+    if not t.startswith("{") and ":" in t and not any(t.startswith(ch) for ch in ("[", "\"")):
+        t2 = "{" + t + "}"
+        obj, err2 = _try(t2)
+        if obj is not None:
+            return obj, None
+
+    # Replace single quotes with double quotes cautiously (not inside already valid JSON)
+    t2 = re.sub(r"(?<!\\)'", '"', t)
+    obj, err2 = _try(t2)
+    if obj is not None:
+        return obj, None
+
+    # Remove trailing commas before } or ]
+    t3 = re.sub(r",\s*([}\]])", r"\1", t2)
+    obj, err3 = _try(t3)
+    if obj is not None:
+        return obj, None
+
+    # Balance braces/brackets if off by one
+    def _balance_braces(u):
+        open_b = u.count("{"); close_b = u.count("}")
+        if open_b > close_b:
+            u += "}" * (open_b - close_b)
+        open_a = u.count("["); close_a = u.count("]")
+        if open_a > close_a:
+            u += "]" * (open_a - close_a)
+        return u
+    t4 = _balance_braces(t3)
+    obj, err4 = _try(t4)
+    if obj is not None:
+        return obj, None
+
+    # As a last resort, extract a JSON object substring
+    m = re.search(r"\{.*\}", t4, re.S)
+    if m:
+        obj, err5 = _try(m.group(0))
+        if obj is not None:
+            return obj, None
+
+    return None, err or err2 or err3 or err4 or "unable to parse json"
+
+def _exp_backoff(attempt: int, base: float = 0.5, cap: float = 6.0) -> float:
+    """Exponential backoff seconds for attempt N (0-based)."""
+    import math
+    return min(cap, base * (2 ** max(0, attempt)))
+
+def _choose_editor() -> str:
+    """Pick a sensible editor with fallbacks."""
+    env = os.environ.get("EDITOR")
+    if env:
+        return env
+    for cand in ("nano", "vim", "vi"):
+        import shutil
+        if shutil.which(cand):
+            return cand
+    return "vi"
+# ---- end injected helpers ----
+
 
 # Enhanced logging setup for autonomous coding workflows
 def setup_enhanced_logging():
@@ -87,7 +175,34 @@ class DemonologyApp:
         self._repetition_count = 0  # Track repetition loops
         self._last_repetition_time = 0  # Track when last repetition occurred
 
-        self.tool_registry = ToolRegistry()
+        
+        # Input history
+        self._history_max = int(os.environ.get("DEMONOLOGY_HISTORY_MAX", "1000"))
+        self._history = deque(maxlen=self._history_max)
+        self._history_file = (self.config.get_conversations_dir().parent / "history.txt")
+        self._readline_enabled = False
+        try:
+            if readline and sys.stdin.isatty():
+                self._readline_enabled = True
+                try:
+                    readline.set_history_length(self._history_max)
+                except Exception:
+                    pass
+                if self._history_file.exists():
+                    try:
+                        readline.read_history_file(str(self._history_file))
+                        # also seed deque for /history popover
+                        for idx in range(min(readline.get_current_history_length() or 0, self._history_max)):
+                            try:
+                                self._history.append(readline.get_history_item(idx+1))
+                            except Exception:
+                                break
+                    except Exception:
+                        pass
+        except Exception:
+            # Non-fatal; continue without readline
+            pass
+        self.tool_registry = create_default_registry()
         
         # Log startup info
         logger.info(f"Demonology CLI started - Log files: {MAIN_LOG_PATH} (main), {ERROR_LOG_PATH} (errors)")
@@ -157,6 +272,11 @@ class DemonologyApp:
             if self._repetition_count > 10:  # Reset after too many attempts
                 logger.info("Resetting repetition counter after recovery attempt")
                 self._repetition_count = 0
+            # Inject exponential backoff to avoid tight retry loops
+            try:
+                time.sleep(_exp_backoff(self._repetition_count))
+            except Exception:
+                pass
                 
             return True
             
@@ -284,6 +404,13 @@ class DemonologyApp:
         if self.client:
             await self.client.close()
         self.ui.cleanup()
+        # Persist readline history
+        try:
+            if self._readline_enabled and readline:
+                readline.set_history_length(self._history_max)
+                readline.write_history_file(str(self._history_file))
+        except Exception:
+            pass
 
     def handle_signal(self, signum, frame):
         self.ui.display_info("Received signal, shutting down gracefully...")
@@ -303,7 +430,7 @@ class DemonologyApp:
             await self.ui.stop_loading()
             self._log_structured_error("connection_failed", str(e), {
                 "base_url": self.config.api.base_url,
-                "model": self.config.api.model_name
+                "model": self.config.api.model
             })
             self.ui.display_error(f"Connection ritual failed: {str(e)}")
             return False
@@ -351,6 +478,29 @@ class DemonologyApp:
             self.ui.display_error(f"❌ Error during server restart: {e}")
             return False
 
+    
+    def _history_add(self, line: str) -> None:
+        """Record a user input (excluding commands). Persist to readline if available."""
+        if not line or line.strip().startswith('/'):
+            return
+        self._history.append(line)
+        if self._readline_enabled and readline:
+            try:
+                readline.add_history(line)
+                # Opportunistically persist
+                try:
+                    readline.write_history_file(str(self._history_file))
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+    def _history_tail(self, n: int = 20) -> list:
+        """Return last n history entries as a list (most recent last)."""
+        if n <= 0:
+            n = 1
+        return list(self._history)[-n:]
+    
     def process_command(self, user_input: str) -> bool:
         """Return False to quit."""
         if not user_input.startswith('/'):
@@ -369,6 +519,21 @@ class DemonologyApp:
             self.ui.display_status()
         elif cmd in ['themes', 'theme-list']:
             self.ui.show_theme_preview()
+        elif cmd in ['history', 'his', 'hi']:
+            # Usage: /history [N]
+            count = 20
+            if len(parts) > 1 and parts[1].isdigit():
+                try:
+                    count = max(1, min(int(parts[1]), self._history_max))
+                except Exception:
+                    count = 20
+            items = self._history_tail(count)
+            if hasattr(self.ui, "show_history_popover"):
+                self.ui.show_history_popover(items, title=f"Last {len(items)} inputs")
+            else:
+                self.ui.console.print("\\n[bold]History (newest last):[/bold]")
+                for i, line in enumerate(items, 1):
+                    self.ui.console.print(f"{i:>3}. {line}")
         elif cmd in ['theme', 't']:
             if len(parts) > 1:
                 self.ui.change_theme(parts[1])
@@ -459,20 +624,21 @@ class DemonologyApp:
         return True
 
     def _show_help(self):
-        self.ui.console.print("""
-[bold]Demonology Commands:[/bold]
+        """Display help information for available commands."""
+        self.ui.console.print(f"""
+[bold red]⛧ DEMONOLOGY COMMAND GRIMOIRE ⛧[/bold red]
 
-/help, /h, /?         Show this help message
-/quit, /q, /bye       Exit Demonology
-/status, /s           Show current status
-/themes               List available themes
-/theme, /t <name>     Change theme (amethyst, infernal, stygian)
-/permissive, /p       Toggle permissive mode
-/model, /m <name>     Change or show current model
-/save, /sv <file>     Save conversation to file
-/load, /ld <file>     Load conversation from file
-/clear, /cls          Clear conversation history
-/config, /cfg         Show current configuration
+[bold]Basic Commands:[/bold]
+/help, /h, /?         Show this grimoire of dark commands
+/quit, /exit, /q      Banish the daemon and return to the void
+/status, /s           Show current summoning status
+/themes               Preview available visual themes
+/theme <name>         Change the visual theme
+/permissive, /p       Toggle permissive mode (dangerous magic)
+
+[bold]Model & Connection:[/bold]
+/model [name]         View or change the AI model
+/config               Show current configuration
 /config edit          Edit configuration file
 /debug, /dbg          Debug API response
 /restart, /rs         Restart llama server and clear VRAM
@@ -1233,6 +1399,7 @@ Config file: {cfg.config_path}
         for tc in tool_calls:
             tool_id = tc.get("id", "")
             function_name = tc.get("function", {}).get("name", "")
+            arguments = {}  # Initialize arguments to prevent NameError
             try:
                 arguments_raw = tc.get("function", {}).get("arguments", "") or "{}"
                 try:
@@ -1288,7 +1455,7 @@ Config file: {cfg.config_path}
                 self._log_structured_error("tool_execution_failed", str(e), {
                     "tool_name": function_name,
                     "tool_arguments": arguments,
-                    "call_id": call_id
+                    "call_id": tool_id
                 })
                 self.ui.console.print(f"[red]✗ {function_name} error: {str(e)}[/red]")
                 tool_results.append({
@@ -1425,8 +1592,24 @@ Config file: {cfg.config_path}
 
     async def chat_loop(self):
         self.running = True
-        signal.signal(signal.SIGINT, self.handle_signal)
-        signal.signal(signal.SIGTERM, self.handle_signal)
+        # guarded for cross-platform
+
+        try:
+
+            signal.signal(signal.SIGINT, self.handle_signal)
+
+        except (AttributeError, ValueError):
+
+            pass
+        # guarded for cross-platform
+
+        try:
+
+            signal.signal(signal.SIGTERM, self.handle_signal)
+
+        except (AttributeError, ValueError):
+
+            pass
 
         while self.running:
             try:
@@ -1481,6 +1664,10 @@ Config file: {cfg.config_path}
 # Context management now handled by _auto_manage_context()
                 
                 self.conversation_history.append({"role": "user", "content": user_input})
+                try:
+                    self._history_add(user_input)
+                except Exception:
+                    pass
                 # Note: User message display is handled by the input system
 
                 # Automatically manage context before sending request
@@ -1623,4 +1810,3 @@ def main(config, theme, model, base_url, permissive, debug):
 
 if __name__ == '__main__':
     main()
-

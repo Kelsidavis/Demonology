@@ -187,6 +187,9 @@ class ConversationDisplay:
     """Display and manage conversation history."""
     
     def __init__(self, console: Console, theme: Theme):
+        from collections import deque
+        import os
+        self._scrollback_limit = int(os.environ.get('DEMONOLOGY_SCROLLBACK_LIMIT', '400'))
         self.console = console
         self.theme = theme
         self.messages: List[Dict[str, str]] = []
@@ -326,6 +329,15 @@ class ConversationDisplay:
         text = Text(content, style=self.theme.get_style("info"))
         return Group(Align.center(text), Text(""))
 
+
+        # Enforce scrollback limit
+        try:
+            if hasattr(self, "messages") and isinstance(self.messages, list):
+                excess = max(0, len(self.messages) - getattr(self, "_scrollback_limit", 400))
+                if excess > 0:
+                    del self.messages[:excess]
+        except Exception:
+            pass
 
 class DemonologyUI:
     """Main UI controller for Demonology."""
@@ -967,3 +979,23 @@ Tools: {'Enabled' if self.config.tools.enabled else 'Disabled'}
         if self._current_live:
             self._current_live.stop()
         asyncio.create_task(self.status_bar.stop())
+
+
+    def show_history_popover(self, items, title: str = "History"):
+        """Display a small history popover with the last inputs (newest last)."""
+        try:
+            from rich.panel import Panel
+            from rich.table import Table
+            tbl = Table.grid(expand=True)
+            tbl.add_column(justify="right", no_wrap=True, ratio=1)
+            tbl.add_column(ratio=12)
+            for i, line in enumerate(items, 1):
+                tbl.add_row(f"[dim]{i:>3}[/dim]", line or "")
+            panel = Panel(tbl, title=f"[b]{title}[/b]", border_style=self.theme_manager.current_theme.get_style("border") if hasattr(self, "theme_manager") else "white")
+            self.console.print(panel)
+        except Exception:
+            # Graceful fallback
+            self.console.print("\n[bold]History:[/bold]")
+            for i, line in enumerate(items, 1):
+                self.console.print(f"{i:>3}. {line}")
+

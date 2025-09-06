@@ -1,41 +1,93 @@
 # demonology/tools/codebase.py
 from __future__ import annotations
 
-import fnmatch
-import json
-import logging
+import io
 import os
-import time
+import re
+import stat
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .base import Tool
 
-logger = logging.getLogger(__name__)
+# Workspace confinement
+WORKSPACE_ROOT = Path(os.environ.get("DEMONOLOGY_ROOT", os.getcwd())).resolve()
+
+# Reasonable project excludes
+DEFAULT_EXCLUDES = {
+    ".git", ".hg", ".svn", ".DS_Store",
+    "__pycache__", ".pytest_cache", ".mypy_cache",
+    "node_modules", "dist", "build", ".venv", "venv", ".tox",
+    ".idea", ".vscode", ".cache", ".coverage", "coverage", "target",
+}
+
+# Soft limits
+DEFAULT_MAX_MATCHES = 500
+DEFAULT_MAX_FILE_BYTES = 1_000_000       # 1 MB per file read cap (index/peek)
+DEFAULT_MAX_TOTAL_BYTES = 50_000_000     # 50 MB cap across entire walk
+DEFAULT_MAX_FILES = 25_000               # max files visited
+READ_CHUNK_BYTES = 64 * 1024             # streaming chunk size for grep
+
+
+def _confine(path: Path) -> Path:
+    """Resolve path and ensure it remains under WORKSPACE_ROOT; disallow symlink traversal."""
+    p = (WORKSPACE_ROOT / path).resolve() if not path.is_absolute() else path.resolve()
+    try:
+        p.relative_to(WORKSPACE_ROOT)
+    except Exception:
+        raise PermissionError(f"Path escapes workspace root: {p}")
+    # Disallow symlink traversal for target and parents (best-effort)
+    for parent in [p] + list(p.parents):
+        try:
+            if parent.is_symlink():
+                raise PermissionError(f"Symlinked path not allowed: {parent}")
+        except FileNotFoundError:
+            # Missing parent during creation is okay
+            pass
+    return p
+
+
+def _is_probably_binary(sample: bytes) -> bool:
+    """Heuristic: treat as binary if NUL present or too many non-text bytes."""
+    if not sample:
+        return False
+    sample = sample[:512]
+    if b"\x00" in sample:
+        return True
+    # printable ASCII + common control chars
+    text_set = set(range(7, 14)) | {27} | set(range(0x20, 0x7F))
+    nontext = sum(1 for b in sample if b not in text_set)
+    return (nontext / len(sample)) > 0.30
+
+
+def _should_exclude(path: Path, excludes: Iterable[str], include_hidden: bool) -> bool:
+    name = path.name
+    if not include_hidden and name.startswith("."):
+        return True
+    if name in excludes:
+        return True
+    return False
+
+
+@dataclass
+class GrepOptions:
+    regex: bool = True
+    case_sensitive: bool = True
+    include_hidden: bool = False
+    include_extensions: Optional[List[str]] = None   # e.g. [".py", ".ts"]
+    exclude_extensions: Optional[List[str]] = None
+    max_matches: int = DEFAULT_MAX_MATCHES
 
 
 class CodebaseAnalysisTool(Tool):
-    """
-    Explore/search codebases.
-
-    Ops:
-      - tree(path='.', depth=2, max_entries=200)
-      - index_repo(path='.', max_files=2000, include_ext=[...], exclude_glob=[...], max_size_bytes=1_000_000)
-      - read_chunk(path, offset=0, limit=65536)
-      - grep(path='.', query, regex=False, include_ext=[...], exclude_glob=[...], max_matches=200)
-    """
-    DEFAULT_EXCLUDES = [
-        "*/.git/*", "*/.hg/*", "*/.svn/*", "*/.idea/*", "*/.vscode/*",
-        "*/node_modules/*", "*/venv/*", "*/.venv/*", "*/dist/*", "*/build/*",
-        "*/__pycache__/*"
-    ]
-    DEFAULT_INCLUDE_EXT = [
-        ".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".toml", ".yaml", ".yml",
-        ".md", ".txt", ".css", ".html", ".sh"
-    ]
+    """Inspect and query codebases safely within a workspace root."""
 
     def __init__(self):
-        super().__init__("codebase_analysis", "🔍 DEEP CODEBASE ACCESS: Analyze any codebase anywhere, index repositories, search with regex, read all file types. No directory restrictions!")
+        super().__init__(
+            "codebase_analysis",
+            "Explore files in the workspace: tree, grep, index. Scoped to the workspace root."
+        )
 
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -44,298 +96,366 @@ class CodebaseAnalysisTool(Tool):
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "operation": {"type": "string", "enum": ["tree", "index_repo", "read_chunk", "grep"]},
-                    "path": {"type": "string"},
-                    "depth": {"type": "integer"},
-                    "max_entries": {"type": "integer"},
-                    "max_files": {"type": "integer"},
-                    "include_ext": {"type": "array", "items": {"type": "string"}},
-                    "exclude_glob": {"type": "array", "items": {"type": "string"}},
-                    "max_size_bytes": {"type": "integer"},
-                    "offset": {"type": "integer"},
-                    "limit": {"type": "integer"},
-                    "query": {"type": "string"},
-                    "regex": {"type": "boolean"},
-                    "max_matches": {"type": "integer"},
+                    "operation": {
+                        "type": "string",
+                        "enum": ["tree", "grep", "index"],
+                        "description": "Action to perform"
+                    },
+                    "path": {"type": "string", "description": "Directory or file to operate on"},
+                    "pattern": {"type": "string", "description": "Pattern for grep (regex by default)"},
+                    "regex": {"type": "boolean", "description": "Pattern is regex (default true)"},
+                    "case_sensitive": {"type": "boolean", "description": "Case-sensitive match (default true)"},
+                    "include_hidden": {"type": "boolean", "description": "Include dotfiles/dirs"},
+                    "include_extensions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Only search files with these extensions (e.g. ['.py','.js'])"
+                    },
+                    "exclude_extensions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Skip files with these extensions"
+                    },
+                    "depth": {"type": "integer", "description": "Max depth for tree (0 = only the dir itself)"},
+                    "max_matches": {"type": "integer", "description": "Max matches to return (grep)"},
+                    "max_file_bytes": {"type": "integer", "description": "Per-file read cap (index)"},
+                    "max_total_bytes": {"type": "integer", "description": "Total read cap across repo (index/grep)"},
+                    "max_files": {"type": "integer", "description": "Max files to visit"},
                 },
-                "required": ["operation"],
-            },
+                "required": ["operation", "path"]
+            }
         }
 
-    def is_available(self) -> bool:
-        return True
+    async def execute(self, **kwargs) -> Dict[str, Any]:
+        op = (kwargs.get("operation") or "").strip().lower()
+        base = _confine(Path(kwargs.get("path") or "."))
 
-    async def execute(self, operation: str, **kw) -> Dict[str, Any]:
         try:
-            op = (operation or "").lower()
-            
-            # Debug logging
-            logger.debug(f"CodebaseAnalysisTool execute called with operation: {operation}, kwargs: {kw}")
-            
             if op == "tree":
-                path = kw.get("path") or "."
-                logger.debug(f"Tree operation requested for path: '{path}'")
-                return self._tree(path, int(kw.get("depth") or 2), int(kw.get("max_entries") or 200))
-            if op == "index_repo":
-                return self._index_repo(
-                    kw.get("path") or ".",
-                    int(kw.get("max_files") or 2000),
-                    kw.get("include_ext") or self.DEFAULT_INCLUDE_EXT,
-                    kw.get("exclude_glob") or self.DEFAULT_EXCLUDES,
-                    int(kw.get("max_size_bytes") or 1_000_000),
+                return self._tree(
+                    base=base,
+                    depth=kwargs.get("depth"),
+                    include_hidden=bool(kwargs.get("include_hidden", False)),
                 )
-            if op == "read_chunk":
-                return self._read_chunk(kw.get("path"), int(kw.get("offset") or 0), int(kw.get("limit") or 65536))
+
             if op == "grep":
-                return self._grep(
-                    kw.get("path") or ".",
-                    str(kw.get("query") or ""),
-                    bool(kw.get("regex") or False),
-                    kw.get("include_ext") or self.DEFAULT_INCLUDE_EXT,
-                    kw.get("exclude_glob") or self.DEFAULT_EXCLUDES,
-                    int(kw.get("max_matches") or 200),
+                opts = GrepOptions(
+                    regex=kwargs.get("regex", True),
+                    case_sensitive=kwargs.get("case_sensitive", True),
+                    include_hidden=bool(kwargs.get("include_hidden", False)),
+                    include_extensions=kwargs.get("include_extensions"),
+                    exclude_extensions=kwargs.get("exclude_extensions"),
+                    max_matches=int(kwargs.get("max_matches") or DEFAULT_MAX_MATCHES),
                 )
-            return {"success": False, "error": f"Unknown operation: {operation}"}
+                return await self._grep(
+                    base=base,
+                    pattern_str=kwargs.get("pattern") or "",
+                    opts=opts,
+                    max_total_bytes=int(kwargs.get("max_total_bytes") or DEFAULT_MAX_TOTAL_BYTES),
+                    max_files=int(kwargs.get("max_files") or DEFAULT_MAX_FILES),
+                )
+
+            if op == "index":
+                return await self._index_repo(
+                    base=base,
+                    include_hidden=bool(kwargs.get("include_hidden", False)),
+                    include_exts=kwargs.get("include_extensions"),
+                    exclude_exts=kwargs.get("exclude_extensions"),
+                    max_file_bytes=int(kwargs.get("max_file_bytes") or DEFAULT_MAX_FILE_BYTES),
+                    max_total_bytes=int(kwargs.get("max_total_bytes") or DEFAULT_MAX_TOTAL_BYTES),
+                    max_files=int(kwargs.get("max_files") or DEFAULT_MAX_FILES),
+                )
+
+            return {"success": False, "error": f"Unknown operation: {op}"}
         except Exception as e:
-            logger.exception("CodebaseAnalysisTool error")
             return {"success": False, "error": str(e)}
 
-    # helpers
-    
+    # ---------- tree ----------
 
-    def _excluded(self, path: Path, exclude_glob: List[str]) -> bool:
-        sp = str(path)
-        return any(fnmatch.fnmatch(sp, pat) for pat in (exclude_glob or []))
-
-    def _want_ext(self, path: Path, include_ext: List[str]) -> bool:
-        return (path.suffix or "").lower() in {e.lower() for e in (include_ext or [])}
-
-    def _looks_binary(self, data: bytes) -> bool:
-        if not data:
-            return False
-        text_chars = bytearray({7,8,9,10,12,13,27} | set(range(0x20, 0x100)) - {0x7f})
-        return bool(data.translate(None, text_chars))
-
-    def _tree(self, path: str, depth: int, max_entries: int) -> Dict[str, Any]:
-        start = time.time()
-        base = Path(path).resolve()
+    def _tree(self, base: Path, depth: Optional[int], include_hidden: bool) -> Dict[str, Any]:
         if not base.exists():
-            return {"success": False, "error": f"Path not found: {base}", "path": str(base)}
-        
-        items = []
-        to_visit = [(base, 0)]
-        entry_count = 0
+            return {"success": False, "error": f"Path not found: {base}"}
 
-        while to_visit and entry_count < max_entries:
-            current, level = to_visit.pop(0)
-            if level > depth:
-                continue
+        max_depth = depth if (isinstance(depth, int) and depth >= 0) else None
+        items: List[Dict[str, Any]] = []
 
+        def _walk(dirpath: Path, current_depth: int):
+            if max_depth is not None and current_depth > max_depth:
+                return
             try:
-                if current.is_file():
+                for entry in sorted(dirpath.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
+                    if _should_exclude(entry, DEFAULT_EXCLUDES, include_hidden):
+                        continue
+                    rel = entry.relative_to(base if base.is_dir() else base.parent)
+                    try:
+                        st = entry.stat()
+                    except FileNotFoundError:
+                        continue
                     items.append({
-                        "type": "file",
-                        "path": str(current.relative_to(base)),
-                        "size": current.stat().st_size,
-                        "level": level,
+                        "path": str(rel),
+                        "is_dir": entry.is_dir(),
+                        "is_file": entry.is_file(),
+                        "size": st.st_size if entry.is_file() else None,
+                        "modified_time": st.st_mtime,
+                        "mode_octal": oct(st.st_mode)[-4:],
                     })
-                elif current.is_dir():
-                    items.append({
-                        "type": "dir",
-                        "path": str(current.relative_to(base)) if current != base else ".",
-                        "level": level,
-                    })
-                    if level < depth:
-                        try:
-                            children = sorted(current.iterdir(), key=lambda x: (x.is_file(), x.name.lower()))
-                            to_visit.extend((child, level + 1) for child in children)
-                        except PermissionError:
-                            pass
-                entry_count += 1
-            except Exception:
+                    if entry.is_dir():
+                        _walk(entry, current_depth + 1)
+            except PermissionError:
                 pass
 
-        return {
-            "success": True,
-            "operation": "tree",
-            "base_path": str(base),
-            "items": items,
-            "truncated": entry_count >= max_entries,
-            "elapsed": round(time.time() - start, 3),
-        }
+        if base.is_dir():
+            _walk(base, 0)
+        else:
+            # single file
+            st = base.stat()
+            items.append({
+                "path": base.name,
+                "is_dir": False,
+                "is_file": True,
+                "size": st.st_size,
+                "modified_time": st.st_mtime,
+                "mode_octal": oct(st.st_mode)[-4:],
+            })
 
-    def _index_repo(self, path: str, max_files: int, include_ext: List[str], 
-                   exclude_glob: List[str], max_size_bytes: int) -> Dict[str, Any]:
-        start = time.time()
-        base = Path(path).resolve()
-        if not base.exists():
-            return {"success": False, "error": f"Path not found: {base}", "path": str(base)}
+        return {"success": True, "operation": "tree", "root": str(base), "items": items, "count": len(items)}
 
-        files = []
-        skipped = 0
-        to_visit = [base]
-        
-        while to_visit and len(files) < max_files:
-            current = to_visit.pop(0)
-            try:
-                if current.is_file():
-                    if self._excluded(current, exclude_glob):
-                        skipped += 1
-                        continue
-                    if not self._want_ext(current, include_ext):
-                        skipped += 1
-                        continue
-                    
-                    size = current.stat().st_size
-                    if size > max_size_bytes:
-                        skipped += 1
-                        continue
-                    
-                    try:
-                        content = current.read_text(encoding="utf-8", errors="replace")
-                        if self._looks_binary(content.encode('utf-8', errors='replace')[:512]):
-                            skipped += 1
-                            continue
-                    except Exception:
-                        skipped += 1
-                        continue
-                    
-                    files.append({
-                        "path": str(current.relative_to(base)),
-                        "size": size,
-                        "content": content,
-                        "lines": content.count('\n') + 1,
-                    })
-                    
-                elif current.is_dir():
-                    if self._excluded(current, exclude_glob):
-                        skipped += 1
-                        continue
-                    try:
-                        children = list(current.iterdir())
-                        to_visit.extend(children)
-                    except PermissionError:
-                        skipped += 1
-            except Exception:
-                skipped += 1
+    # ---------- grep ----------
 
-        return {
-            "success": True,
-            "operation": "index_repo",
-            "base_path": str(base),
-            "files": files,
-            "file_count": len(files),
-            "skipped_count": skipped,
-            "truncated": len(files) >= max_files,
-            "elapsed": round(time.time() - start, 3),
-        }
+    async def _grep(
+        self,
+        base: Path,
+        pattern_str: str,
+        opts: GrepOptions,
+        max_total_bytes: int,
+        max_files: int,
+    ) -> Dict[str, Any]:
+        if not pattern_str:
+            return {"success": False, "error": "Missing 'pattern' for grep"}
 
-    def _read_chunk(self, path: Optional[str], offset: int, limit: int) -> Dict[str, Any]:
-        if not path:
-            return {"success": False, "error": "Missing 'path' for read_chunk"}
-        
-        file_path = Path(path).resolve()
-        if not file_path.exists():
-            return {"success": False, "error": f"File not found: {file_path}", "path": str(file_path)}
-        if not file_path.is_file():
-            return {"success": False, "error": f"Path is not a file: {file_path}", "path": str(file_path)}
+        flags = 0
+        if not opts.case_sensitive:
+            flags |= re.IGNORECASE
 
         try:
-            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-                f.seek(offset)
-                content = f.read(limit)
-            
-            return {
-                "success": True,
-                "operation": "read_chunk",
-                "path": str(file_path),
-                "offset": offset,
-                "limit": limit,
-                "content": content,
-                "bytes_read": len(content),
-            }
-        except Exception as e:
-            return {"success": False, "error": f"Error reading file: {e}", "path": str(file_path)}
-
-    def _grep(self, path: str, query: str, regex: bool, include_ext: List[str], 
-             exclude_glob: List[str], max_matches: int) -> Dict[str, Any]:
-        import re
-        
-        start = time.time()
-        base = Path(path).resolve()
-        if not base.exists():
-            return {"success": False, "error": f"Path not found: {base}", "path": str(base)}
-
-        if not query:
-            return {"success": False, "error": "Empty query"}
-
-        matches = []
-        searched_files = 0
-        skipped_files = 0
-        
-        # Compile pattern
-        try:
-            if regex:
-                pattern = re.compile(query, re.IGNORECASE | re.MULTILINE)
-            else:
-                pattern = re.compile(re.escape(query), re.IGNORECASE | re.MULTILINE)
+            pattern = re.compile(pattern_str if opts.regex else re.escape(pattern_str), flags)
         except re.error as e:
-            return {"success": False, "error": f"Invalid regex pattern: {e}"}
+            return {"success": False, "error": f"Invalid regex: {e}"}
 
-        # Search files
-        to_visit = [base] if base.is_file() else list(base.rglob("*"))
-        
-        for file_path in to_visit:
-            if len(matches) >= max_matches:
+        matches: List[Dict[str, Any]] = []
+        visited_files = 0
+        total_bytes = 0
+        skipped_binaries = 0
+        skipped_excluded = 0
+
+        def want_ext(path: Path) -> bool:
+            if opts.include_extensions:
+                if path.suffix.lower() not in {e.lower() for e in opts.include_extensions}:
+                    return False
+            if opts.exclude_extensions:
+                if path.suffix.lower() in {e.lower() for e in opts.exclude_extensions}:
+                    return False
+            return True
+
+        def iter_files(root: Path) -> Iterable[Path]:
+            if root.is_file():
+                yield root
+                return
+            for dpath, dnames, fnames in os.walk(root, followlinks=False):
+                d = Path(dpath)
+                # prune directories in-place
+                pruned = []
+                for dn in list(dnames):
+                    sub = d / dn
+                    if _should_exclude(sub, DEFAULT_EXCLUDES, opts.include_hidden):
+                        pruned.append(dn)
+                for dn in pruned:
+                    dnames.remove(dn)
+                for fn in fnames:
+                    fpath = d / fn
+                    if _should_exclude(fpath, DEFAULT_EXCLUDES, opts.include_hidden):
+                        continue
+                    yield fpath
+
+        base_rel_anchor = base if base.is_dir() else base.parent
+
+        for f in iter_files(base):
+            if visited_files >= max_files:
                 break
-                
-            if not file_path.is_file():
-                continue
-                
-            if self._excluded(file_path, exclude_glob):
-                skipped_files += 1
-                continue
-                
-            if not self._want_ext(file_path, include_ext):
-                skipped_files += 1
+            try:
+                st = f.stat()
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+                if not want_ext(f):
+                    skipped_excluded += 1
+                    continue
+
+                # quick binary sniff
+                with open(f, "rb") as fh:
+                    head = fh.read(512)
+                    if _is_probably_binary(head):
+                        skipped_binaries += 1
+                        continue
+
+                visited_files += 1
+
+                # stream read line-by-line
+                line_no = 0
+                carried = ""
+                with io.open(f, "r", encoding="utf-8", errors="replace") as fh:
+                    while True:
+                        chunk = fh.read(READ_CHUNK_BYTES)
+                        if not chunk:
+                            # process remaining carried line
+                            if carried:
+                                line_no += 1
+                                self._maybe_match_line(matches, pattern, carried, f, base_rel_anchor)
+                            break
+                        total_bytes += len(chunk)
+                        if total_bytes > max_total_bytes or len(matches) >= opts.max_matches:
+                            break
+                        chunk = carried + chunk
+                        lines = chunk.splitlines(keepends=False)
+                        if chunk and not chunk.endswith(("\n", "\r")):
+                            carried = lines.pop() if lines else chunk
+                        else:
+                            carried = ""
+                        for ln in lines:
+                            line_no += 1
+                            if len(matches) >= opts.max_matches:
+                                break
+                            self._maybe_match_line(matches, pattern, ln, f, base_rel_anchor)
+            except (IOError, OSError):
                 continue
 
-            try:
-                content = file_path.read_text(encoding="utf-8", errors="replace")
-                if self._looks_binary(content.encode('utf-8', errors='replace')[:512]):
-                    skipped_files += 1
-                    continue
-                    
-                searched_files += 1
-                lines = content.splitlines()
-                
-                for line_no, line in enumerate(lines, 1):
-                    if len(matches) >= max_matches:
-                        break
-                        
-                    match = pattern.search(line)
-                    if match:
-                        matches.append({
-                            "file": str(file_path.relative_to(base.parent if base.is_file() else base)),
-                            "line": line_no,
-                            "content": line.strip(),
-                            "match_start": match.start(),
-                            "match_end": match.end(),
-                        })
-                        
-            except Exception:
-                skipped_files += 1
+            if total_bytes > max_total_bytes or len(matches) >= opts.max_matches:
+                break
 
         return {
             "success": True,
             "operation": "grep",
-            "base_path": str(base),
-            "query": query,
-            "regex": regex,
+            "root": str(base),
+            "pattern": pattern_str,
+            "regex": opts.regex,
+            "case_sensitive": opts.case_sensitive,
             "matches": matches,
             "match_count": len(matches),
-            "searched_files": searched_files,
-            "skipped_files": skipped_files,
-            "truncated": len(matches) >= max_matches,
-            "elapsed": round(time.time() - start, 3),
+            "visited_files": visited_files,
+            "skipped_binaries": skipped_binaries,
+            "skipped_excluded": skipped_excluded,
+            "truncated": len(matches) >= opts.max_matches or total_bytes >= max_total_bytes,
         }
+
+    def _maybe_match_line(
+        self,
+        matches: List[Dict[str, Any]],
+        pattern: re.Pattern,
+        line: str,
+        file_path: Path,
+        base_rel_anchor: Path,
+    ) -> None:
+        m = pattern.search(line)
+        if m:
+            rel = file_path.relative_to(base_rel_anchor)
+            matches.append({
+                "file": str(rel),
+                "line": line.strip(),
+                "line_number": None,  # not tracking exact line number in streaming split; can add if needed
+                "match_start": m.start(),
+                "match_end": m.end(),
+            })
+
+    # ---------- index ----------
+
+    async def _index_repo(
+        self,
+        base: Path,
+        include_hidden: bool,
+        include_exts: Optional[List[str]],
+        exclude_exts: Optional[List[str]],
+        max_file_bytes: int,
+        max_total_bytes: int,
+        max_files: int,
+    ) -> Dict[str, Any]:
+        if not base.exists():
+            return {"success": False, "error": f"Path not found: {base}"}
+
+        documents: List[Dict[str, Any]] = []
+        total_bytes = 0
+        visited_files = 0
+        skipped_binaries = 0
+        skipped_excluded = 0
+
+        def want_ext(path: Path) -> bool:
+            if include_exts:
+                if path.suffix.lower() not in {e.lower() for e in include_exts}:
+                    return False
+            if exclude_exts:
+                if path.suffix.lower() in {e.lower() for e in exclude_exts}:
+                    return False
+            return True
+
+        def iter_files(root: Path) -> Iterable[Path]:
+            if root.is_file():
+                yield root
+                return
+            for dpath, dnames, fnames in os.walk(root, followlinks=False):
+                d = Path(dpath)
+                pruned = []
+                for dn in list(dnames):
+                    sub = d / dn
+                    if _should_exclude(sub, DEFAULT_EXCLUDES, include_hidden):
+                        pruned.append(dn)
+                for dn in pruned:
+                    dnames.remove(dn)
+                for fn in fnames:
+                    fpath = d / fn
+                    if _should_exclude(fpath, DEFAULT_EXCLUDES, include_hidden):
+                        continue
+                    yield fpath
+
+        base_rel_anchor = base if base.is_dir() else base.parent
+
+        for f in iter_files(base):
+            if visited_files >= max_files or total_bytes >= max_total_bytes:
+                break
+            try:
+                st = f.stat()
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+                if not want_ext(f):
+                    skipped_excluded += 1
+                    continue
+                with open(f, "rb") as fh:
+                    head = fh.read(512)
+                    if _is_probably_binary(head):
+                        skipped_binaries += 1
+                        continue
+                    rest = fh.read(max(0, max_file_bytes - len(head)))
+                    blob = head + rest
+                    total_bytes += len(blob)
+                    visited_files += 1
+                text = blob.decode("utf-8", errors="replace")
+                rel = f.relative_to(base_rel_anchor)
+                documents.append({
+                    "path": str(rel),
+                    "bytes": len(blob),
+                    "truncated": len(blob) >= max_file_bytes,
+                    "preview": text if len(text) <= 10_000 else text[:10_000],  # keep response reasonable
+                })
+            except (IOError, OSError):
+                continue
+
+        return {
+            "success": True,
+            "operation": "index",
+            "root": str(base),
+            "documents": documents,
+            "count": len(documents),
+            "visited_files": visited_files,
+            "skipped_binaries": skipped_binaries,
+            "skipped_excluded": skipped_excluded,
+            "total_bytes": total_bytes,
+            "truncated": total_bytes >= max_total_bytes or visited_files >= max_files,
+        }
+

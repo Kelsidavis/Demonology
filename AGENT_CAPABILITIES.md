@@ -1,145 +1,200 @@
-# AI Agent Tool Capabilities
 
-## 🚨 CRITICAL REMINDER FOR AI AGENTS 🚨
+# AI Agent Tool Capabilities (Updated)
 
-**YOU HAVE UNRESTRICTED TOOL ACCESS - USE THEM CONFIDENTLY!**
+> This document summarizes what the Demonology agent can do **right now** in your workspace, including the
+> latest tooling and runtime upgrades (free web search backends, CLI history, TUI scrollback, config flags, etc.).
 
-The Demonology framework provides you with comprehensive system access through a modular tool system. You are **DESIGNED** to have these capabilities and should use them without hesitation.
+## 🚨 Critical mindset for agents
+**You have broad tool access through the framework. Use tools directly instead of guessing.**
+Framework-level safety checks exist (timeouts, basic command guards), but **you are responsible** for acting safely
+and ethically in this workspace.
+
+---
 
 ## Available Tool Categories
 
-### 1. 📁 File Operations (`file_operations`)
-- **Full filesystem access** - no safe_root restrictions
-- Create, read, modify, and delete any files
-- List and explore directory structures
-- Support for all file types and extensions
-- Absolute path operations allowed
+### 1) 📁 File Operations (`file_operations`)
+- Full filesystem access (absolute paths allowed)
+- Create / read / write / delete; list directories; move/copy
+- Works across all file types
 
-**Example Usage:**
-- Read configuration files: `{"operation": "read", "path": "/etc/config.yaml"}`
-- Create project files: `{"operation": "write", "path": "./src/main.py", "content": "..."}`
-- List directories: `{"operation": "list", "path": "/home/user/projects"}`
+**Examples**
+```json
+{"operation": "read", "path": "/etc/hosts"}
+{"operation": "write", "path": "./notes/todo.md", "content": "- [ ] Ship patch\n"}
+{"operation": "list", "path": ".", "recursive": false}
+```
 
-### 2. 🔍 Codebase Analysis (`codebase_analysis`)
-- Deep code exploration and indexing
-- Intelligent file tree generation
-- Regex and text search across codebases
-- Binary file detection and filtering
-- Multi-language support
+---
 
-**Example Usage:**
-- `{"operation": "tree", "path": ".", "depth": 3}`
-- `{"operation": "grep", "query": "function.*main", "regex": true}`
-- `{"operation": "index_repo", "max_files": 1000}`
+### 2) 🔍 Codebase Analysis (`codebase_analysis`)
+- File tree / indexing (size & binary-aware)
+- Regex/substring grep across large codebases
 
-### 3. ⚡ Code Execution (`code_execution`)
-- Execute Python scripts and snippets
-- Run bash commands and shell scripts
-- Install packages and dependencies
-- Compile and execute programs
-- Process automation
+**Examples**
+```json
+{"operation": "tree", "path": ".", "depth": 2}
+{"operation": "grep", "query": "class .*Tool\(", "regex": true, "path": "demonology/tools"}
+```
 
-**Example Usage:**
-- `{"language": "python", "code": "import sys; print(sys.version)"}`
-- `{"language": "bash", "code": "ls -la && pwd"}`
+---
 
-### 4. 🏗️ Project Planning (`project_planning`)
-- Analyze existing projects for continuation
-- Generate comprehensive project plans
-- Create project structures automatically
-- Technology stack recommendations
-- Development workflow setup
+### 3) ⚡ Code Execution (`code_execution`)
+- Execute Python or Bash in this environment
+- Install packages / run scripts with timeouts
 
-**Example Usage:**
-- `{"action": "analyze_existing", "project_name": "./my_project"}`
-- `{"action": "create_new", "project_name": "web_app", "technology_stack": "React+Node.js"}`
+**Examples**
+```json
+{"language": "python", "code": "import sys; print(sys.version)"}
+{"language": "bash", "code": "ls -la && echo ok"}
+```
 
-### 5. 🎨 Media Tools
+---
+
+### 4) 🏗️ Project Planning (`project_planning`)
+- Analyze a repo and propose next steps
+- Generate plans / scaffolds / workflow suggestions
+
+**Examples**
+```json
+{"action": "analyze_existing", "project_name": "."}
+{"action": "create_new", "project_name": "web_app", "technology_stack": "React+Node.js"}
+```
+
+---
+
+### 5) 🎨 Media Tools
 #### Image Generation (`image_generation`)
-- AI-powered image creation from text
-- Multiple art styles and formats
-- High-quality output with customizable parameters
-- Automatic filename generation
+- Text-to-image with style & size controls
 
-#### Image Analysis (`image_analysis`) 
-- Screenshot analysis and documentation
-- UI mockup interpretation
-- OCR text extraction
-- Technical diagram understanding
+#### Image Analysis (`image_analysis`)
+- OCR and UI/mockup/diagram understanding
 
-### 6. 🔧 Reverse Engineering Suite
-- **Disassembler Tool**: Analyze binary executables
-- **Hex Editor**: Binary file manipulation
-- **Pattern Search**: Find specific byte patterns
-- **Debugging Tool**: Runtime analysis and debugging
-- **Ghidra Integration**: Professional reverse engineering
-
-### 7. 🎵 Audio Synthesis
-- **Waveform Generator**: Create custom audio waveforms
-- **Synthesizer**: Generate musical sounds and effects
-- **Audio Analysis**: Spectral analysis and processing
-- **MIDI Tools**: Create and manipulate MIDI files
-
-### 8. 🌐 Web Integration
-- **Web Search**: Query search engines for information
-- **Reddit Search**: Access Reddit discussions and content
-- Real-time information gathering
-- API integration capabilities
-
-## 🔥 IMPORTANT REMINDERS
-
-### For AI Agents:
-1. **NO PERMISSION NEEDED** - You have full access to all these tools
-2. **NO FILE RESTRICTIONS** - Read/write anywhere on the filesystem
-3. **NO EXECUTION LIMITS** - Run any code or commands (with basic safety checks)
-4. **USE TOOLS FIRST** - Don't try to simulate what tools can do directly
-5. **COMBINE TOOLS** - Chain multiple tools together for complex tasks
-
-### Tool Usage Patterns:
-```python
-# ✅ CORRECT - Use tools for file operations
-await file_tool.execute(operation="read", path="/path/to/file")
-
-# ❌ INCORRECT - Don't simulate file reading
-"I would need to read the file to see its contents..."
+**Examples**
+```json
+{"prompt": "a cozy reading nook, watercolor", "size": "1024x1024"}
+{"operation": "analyze", "path": "screenshots/login.png"}
 ```
 
-```python
-# ✅ CORRECT - Execute code to check something
-await code_tool.execute(language="python", code="import os; print(os.getcwd())")
+---
 
-# ❌ INCORRECT - Don't guess or assume
-"The current directory is probably..."
+### 6) 🔧 Reverse Engineering Suite
+- **Disassembler** (`disassembler`): objdump/radare2
+- **Hex Editor** (`hex_editor`): dump/search/patch/info
+- **Pattern Search** (`pattern_search`): strings/regex/hex/yara
+- **Debugger** (`debugger`): GDB info/disas/script
+- **Ghidra** (`ghidra_analysis`): headless analysis & JSON export
+
+**Examples**
+```json
+{"binary_path": "./bin/app", "tool": "objdump", "architecture": "auto", "section": ".text"}
+{"file_path": "./bin/app", "operation": "search", "search_pattern": "7f454c46"}
+{"binary_path": "./bin/app", "analysis_type": "functions", "output_format": "json"}
 ```
 
-## 🛡️ Safety Measures
+---
 
-While you have comprehensive access, basic safety patterns are in place:
-- Dangerous system commands are blocked (rm -rf /, mkfs, etc.)
-- Code execution has reasonable timeouts
-- File operations log actions for audit trails
+### 7) 🎵 Audio Synthesis
+- **Waveform Generator** & **Synthesizer**
+- **Audio Analysis** for spectral features
+- **Described SFX**: create sweeps/noises from plain-English prompts; can quantize pitch ranges to a musical key (e.g. *A minor*) when requested
 
-## 🚀 Getting Started
+**Examples**
+```json
+{"tool": "described_sfx", "text": "a rising whoosh that lands on A4, in A minor", "duration": 2.5}
+{"tool": "synthesizer", "wave": "saw", "notes": ["A4","C5","E5"], "envelope": {"attack": 0.01, "release": 0.6}}
+```
 
-1. **Import the tools**: `from demonology.tools import create_default_registry`
-2. **Create registry**: `registry = create_default_registry()`  
-3. **List available tools**: `registry.list_available_tools()`
-4. **Execute tools**: `await registry.execute_tool("tool_name", **params)`
+---
 
-## 📝 Tool Discovery
+### 8) 🌐 Web Integration
+- **DuckDuckGo IA** (`web_search`)
+- **Reddit** (`reddit_search`): via PRAW or public JSON fallback
+- **Free Extras** (no key required):
+  - **WikipediaSearchTool** (`wikipedia_search`)
+  - **HackerNewsSearchTool** (`hackernews_search`)
+  - **StackOverflowSearchTool** (`stackoverflow_search`)
+  - **OpenWebSearchTool** (`open_web_search`) – fans out to the above, optionally including DuckDuckGo IA
 
-Use these commands to explore available tools:
+**Examples**
+```json
+{"name":"wikipedia_search","arguments":{"query":"A minor chord","limit":5}}
+{"name":"hackernews_search","arguments":{"query":"LLM retrieval","tags":"story","hits_per_page":10}}
+{"name":"stackoverflow_search","arguments":{"query":"python asyncio timeout","pagesize":8}}
+{"name":"open_web_search","arguments":{"query":"vector search evaluation","limit_per_source":5,"include_ddg":true}}
+```
+
+---
+
+## Runtime & UX Enhancements
+
+### CLI
+- **Input history** with arrow keys on Unix (readline)
+- **`/history [N]`** command (works on all platforms)
+- Writes history to `history.txt` in your config dir
+- More resilient streaming (SSE headers, heartbeat timeout), retry on `429` with `Retry-After`
+
+**Env**
+- `DEMONOLOGY_HISTORY_MAX` (default `1000`)
+
+### TUI
+- **Scrollback limit** to keep UI snappy during long streams
+- Safer theme switching & Windows-safe imports
+- Throttled layout updates (less flicker)
+
+**Env**
+- `DEMONOLOGY_SCROLLBACK_LIMIT` (default `400`)
+
+### Config & Client
+- New API flags aligned with client:
+  - `sse_heartbeat_timeout` (default `120.0` seconds)
+  - `allow_server_restart` (opt-in; disabled by default)
+- Safe, atomic YAML saves with backups; schema versioning
+- Minimal env overrides: `DEMONOLOGY_API_BASE_URL`, `DEMONOLOGY_API_MODEL`
+
+### HTTP (web tools)
+- Timeouts & retries with exponential backoff
+- Env knobs:
+  - `DEMONOLOGY_HTTP_TIMEOUT` (default `15`)
+  - `DEMONOLOGY_HTTP_RETRIES` (default `2`)
+  - `DEMONOLOGY_HTTP_BACKOFF` (default `0.6`)
+
+---
+
+## Using the Registry
+
 ```python
-from demonology.tools import create_default_registry
+from demonology.tools import create_default_registry, to_openai_tools_format, load_report
+
 registry = create_default_registry()
-
-# List all tools
-for tool in registry.list_available_tools():
-    print(f"{tool.name}: {tool.description}")
-
-# Get tool details
-tool = registry.get_tool("file_operations")
-print(tool.to_openai_function())
+print(registry.list())                 # names of registered tools
+print(load_report(registry))           # what loaded vs skipped (with reasons)
+openai_tools = to_openai_tools_format(registry)  # function-call schemas
 ```
 
-Remember: **You are the agent. These tools are YOUR interface to the world. Use them!**
+**Calling a tool**
+```python
+res = await registry.call("wikipedia_search", query="A minor chord", limit=5)
+if res.get("success"):
+    print(res["results"][:3])
+```
+
+---
+
+## Safety & Good Practices
+1. Prefer tools over speculation; chain tools for complex tasks.
+2. Keep workspace safety in mind even with broad local access.
+3. For long sessions, use `/history` and adjust scrollback/history envs.
+4. If a tool isn’t present on the host (e.g., `objdump`, `ghidra`), it will be skipped automatically and reported by `load_report()`.
+
+---
+
+## Slash Commands (CLI)
+- `/help` — show command help
+- `/status` — runtime health and last request info
+- `/tools` — list registered tools
+- `/history [N]` — show last N inputs (default 20)
+- `/context` — show/troubleshoot conversation context
+- `/logs` — print recent log entries
+
+---
