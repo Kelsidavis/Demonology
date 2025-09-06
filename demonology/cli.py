@@ -569,6 +569,8 @@ class DemonologyApp:
             asyncio.create_task(self._manual_server_restart())
         elif cmd in ['tools', 'tl']:
             self._show_tools()
+        elif cmd in ['diagnose', 'diag', 'dx']:
+            self._handle_diagnose_command(user_input)
         elif cmd in ['logs', 'log']:
             self._show_logs()
         elif cmd in ['context', 'ctx', 'c']:
@@ -643,6 +645,7 @@ class DemonologyApp:
 /debug, /dbg          Debug API response
 /restart, /rs         Restart llama server and clear VRAM
 /tools, /tl           List available tools
+/diagnose, /diag, /dx <binary> [--dll-dir <path>]  Diagnose reverse engineering setup
 /logs, /log           Show log file locations for error review
 
 [bold]Context Management:[/bold]
@@ -926,6 +929,53 @@ Config file: {cfg.config_path}
         if self.config.tools.enabled:
             openai_tools = self.tool_registry.to_openai_tools_format()
             self.ui.console.print(f"[dim]Total tools sent to model: {len(openai_tools)}[/dim]")
+
+    def _handle_diagnose_command(self, user_input: str):
+        """Handle the diagnose command for troubleshooting reverse engineering setup."""
+        from .diagnostic import diagnose_binary, print_diagnostic_report
+        
+        # Parse command line arguments
+        parts = user_input.split()
+        if len(parts) < 2:
+            self.ui.display_error("Usage: /diagnose <binary_path> [--dll-dir <path>] [--verbose]")
+            self.ui.display_info("Examples:")
+            self.ui.display_info("  /diagnose REBEXE.EXE --dll-dir .dlls")
+            self.ui.display_info("  /diagnose program.exe --verbose")
+            return
+        
+        binary_path = parts[1]
+        dll_dir = None
+        verbose = False
+        
+        # Simple argument parsing
+        i = 2
+        while i < len(parts):
+            if parts[i] == "--dll-dir" and i + 1 < len(parts):
+                dll_dir = parts[i + 1]
+                i += 2
+            elif parts[i] == "--verbose" or parts[i] == "-v":
+                verbose = True
+                i += 1
+            else:
+                i += 1
+        
+        try:
+            self.ui.display_info("🔍 Running diagnostic analysis...")
+            results = diagnose_binary(binary_path, dll_dir, verbose)
+            print_diagnostic_report(results, verbose)
+            
+            # Suggest next steps based on results
+            status = results.get("overall_status", "unknown")
+            if status == "ready":
+                self.ui.display_success("\n🎉 Your setup looks good! You can proceed with reverse engineering analysis.")
+            elif status == "minor_issues":
+                self.ui.display_info("\n⚡ Your setup should work but could be improved. Check the suggestions above.")
+            else:
+                self.ui.display_error("\n⚠️  Your setup has issues that may prevent successful analysis. Please address the problems listed above.")
+                
+        except Exception as e:
+            self.ui.display_error(f"Diagnostic failed: {e}")
+            logger.error(f"Diagnostic command error: {e}", exc_info=True)
     
     def _show_logs(self):
         """Display log file locations for debugging."""
