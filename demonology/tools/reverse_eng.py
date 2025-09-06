@@ -1162,7 +1162,10 @@ else:
                 )
 
                 try:
-                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+                    stdout, stderr = await
+                    asyncio.wait_for(process.communicate(), timeout=timeout)
+
+                            
                 except asyncio.TimeoutError:
                     process.kill()
                     return {"success": False, "error": f"Analysis timed out after {timeout} seconds"}
