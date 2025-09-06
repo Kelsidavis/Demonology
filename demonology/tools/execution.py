@@ -25,13 +25,13 @@ def _limit_resources():
         # CPU seconds hard cap: timeout+1 as a backstop
         cpu = max(1, DEFAULT_TIMEOUT + 1)
         resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
-        # Max address space (bytes), e.g., 1.5 GiB by default
-        as_bytes = int(os.environ.get("DEMONOLOGY_EXEC_MEM_BYTES", str(1_500_000_000)))
+        # Max address space (bytes), e.g., 64 GiB by default (increased for Ghidra)
+        as_bytes = int(os.environ.get("DEMONOLOGY_EXEC_MEM_BYTES", str(64_000_000_000)))
         resource.setrlimit(resource.RLIMIT_AS, (as_bytes, as_bytes))
-        # Open files
-        resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
-        # Max processes/threads
-        resource.setrlimit(resource.RLIMIT_NPROC, (64, 64))
+        # Open files (increased for Java applications like Ghidra)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (2048, 2048))
+        # Max processes/threads (increased for multithreaded applications)
+        resource.setrlimit(resource.RLIMIT_NPROC, (512, 512))
         # Disable core dumps
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     except Exception:
@@ -102,14 +102,22 @@ class CodeExecutionTool(Tool):
 
             # Launch
             start = time.monotonic()
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(cwd),
-                env=env,
-                preexec_fn=_limit_resources if hasattr(os, "setuid") else None,  # best-effort *nix only
-            )
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(cwd),
+                    env=env,
+                    preexec_fn=_limit_resources if hasattr(os, "setuid") else None,  # best-effort *nix only
+                )
+            except OSError as e:
+                if e.errno == 11:  # EAGAIN - Resource temporarily unavailable
+                    return {"success": False, "error": "System resources temporarily unavailable. Please try again in a moment."}
+                elif e.errno == 12:  # ENOMEM - Cannot allocate memory
+                    return {"success": False, "error": "Insufficient memory to execute command."}
+                else:
+                    return {"success": False, "error": f"Failed to start process: {e}"}
 
             try:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=float(timeout))

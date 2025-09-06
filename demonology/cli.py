@@ -1315,6 +1315,35 @@ Config file: {cfg.config_path}
                 if desc_match:
                     arguments["project_description"] = desc_match.group(1)
                     
+            elif function_name == "code_execution":
+                # Extract language parameter
+                lang_match = re.search(r'"language":\s*"([^"]*)"', arguments_str)
+                if lang_match:
+                    arguments["language"] = lang_match.group(1)
+                else:
+                    arguments["language"] = "bash"  # Default to bash
+                
+                # Extract code parameter - handle multiline code
+                code_match = re.search(r'"code":\s*"((?:[^"\\]|\\.)*)"', arguments_str, re.DOTALL)
+                if code_match:
+                    # Unescape JSON string
+                    code = code_match.group(1).replace('\\"', '"').replace('\\n', '\n').replace('\\\\', '\\')
+                    arguments["code"] = code
+                else:
+                    # Try without quotes as fallback
+                    code_match = re.search(r'"code":\s*([^,}]+)', arguments_str)
+                    if code_match:
+                        arguments["code"] = code_match.group(1).strip()
+                
+                # Extract optional parameters
+                workdir_match = re.search(r'"workdir":\s*"([^"]*)"', arguments_str)
+                if workdir_match:
+                    arguments["workdir"] = workdir_match.group(1)
+                
+                timeout_match = re.search(r'"timeout":\s*(\d+)', arguments_str)
+                if timeout_match:
+                    arguments["timeout"] = int(timeout_match.group(1))
+                    
         except Exception as e:
             logger.error(f"Fallback argument extraction failed: {e}")
             
@@ -1564,6 +1593,9 @@ Config file: {cfg.config_path}
             self.ui.display_info("⏰ Setup timed out. Keeping current auto-continue setting.")
         except KeyboardInterrupt:
             self.ui.display_info("⏹️  Setup cancelled. Keeping current setting.")
+        except EOFError:
+            # Non-interactive mode (no stdin available)
+            self.ui.display_info("⚙️  Non-interactive mode detected. Keeping current auto-continue setting.")
         
         self.ui.console.print()
     

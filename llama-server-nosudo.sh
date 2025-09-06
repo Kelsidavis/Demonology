@@ -8,6 +8,10 @@ CONTEXT=32768
 NGL=48
 THREADS=20
 BATCH_SIZE=192
+PARALLEL=4
+KEEP_ALIVE=300
+CACHE_TYPE_K="bf16"
+CACHE_TYPE_V="bf16"
 ALIAS="qwen3-14b"                  # 5 minute keep-alive
 
 echo "=========================================="
