@@ -1071,10 +1071,12 @@ else:
                 # Global options after project args  
                 # Re-enable DLL directory support now that basic command works
                 if dll_directory:
-                    dll_path = Path(dll_directory).resolve()
-                    if dll_path.exists() and dll_path.is_dir():
-                        cmd.extend(["-librarySearchPaths", str(dll_path)])
-                        logger.info(f"Added DLL search path: {dll_path}")
+                    # Normalize path separators (handle Windows-style paths on Linux)  
+                    normalized_search_path = dll_directory.replace('\\', '/')
+                    dll_search_path = Path(normalized_search_path).resolve()
+                    if dll_search_path.exists() and dll_search_path.is_dir():
+                        cmd.extend(["-librarySearchPaths", str(dll_search_path)])
+                        logger.info(f"Added DLL search path: {dll_search_path}")
                     else:
                         logger.warning(f"DLL directory not found or not a directory: {dll_directory}")
                 
@@ -1082,20 +1084,25 @@ else:
                 cmd.extend(["-import", str(binary_file)])
                 
                 # If DLL directory is available, import key DLLs for better symbol resolution
-                if dll_directory and Path(dll_directory).exists():
-                    dll_path = Path(dll_directory)
-                    # Import key system and game DLLs that are likely to be referenced
-                    priority_dlls = ['kernel32.dll', 'user32.dll', 'advapi32.dll', 'gdi32.dll', 
-                                   'SMACKW32.DLL', 'ALBRIEF.DLL', 'ALSPRITE.DLL', 'D3DRM.DLL']
-                    for dll_name in priority_dlls:
-                        dll_file = dll_path / dll_name
-                        # Check case-insensitive
-                        if not dll_file.exists():
-                            # Try lowercase
-                            dll_file = dll_path / dll_name.lower()
-                        if dll_file.exists():
-                            cmd.extend(["-import", str(dll_file)])
-                            logger.info(f"Added DLL for symbol resolution: {dll_name}")
+                if dll_directory:
+                    # Normalize path separators (handle Windows-style paths on Linux)
+                    normalized_path = dll_directory.replace('\\', '/')
+                    dll_path = Path(normalized_path).resolve()  # Resolve to absolute path first
+                    if dll_path.exists() and dll_path.is_dir():
+                        # Import key system and game DLLs that are likely to be referenced
+                        priority_dlls = ['kernel32.dll', 'user32.dll', 'advapi32.dll', 'gdi32.dll', 
+                                       'SMACKW32.DLL', 'ALBRIEF.DLL', 'ALSPRITE.DLL', 'D3DRM.DLL']
+                        for dll_name in priority_dlls:
+                            dll_file = dll_path / dll_name
+                            # Check case-insensitive
+                            if not dll_file.exists():
+                                # Try lowercase
+                                dll_file = dll_path / dll_name.lower()
+                            if dll_file.exists():
+                                cmd.extend(["-import", str(dll_file)])
+                                logger.info(f"Added DLL for symbol resolution: {dll_name}")
+                    else:
+                        logger.warning(f"DLL directory not found: {dll_path}")
                 
                 # Analysis toggle comes after import
                 # NOTE: Analysis happens by default! Only add -noanalysis to disable it
