@@ -1081,6 +1081,22 @@ else:
                 # Import and analysis options
                 cmd.extend(["-import", str(binary_file)])
                 
+                # If DLL directory is available, import key DLLs for better symbol resolution
+                if dll_directory and Path(dll_directory).exists():
+                    dll_path = Path(dll_directory)
+                    # Import key system and game DLLs that are likely to be referenced
+                    priority_dlls = ['kernel32.dll', 'user32.dll', 'advapi32.dll', 'gdi32.dll', 
+                                   'SMACKW32.DLL', 'ALBRIEF.DLL', 'ALSPRITE.DLL', 'D3DRM.DLL']
+                    for dll_name in priority_dlls:
+                        dll_file = dll_path / dll_name
+                        # Check case-insensitive
+                        if not dll_file.exists():
+                            # Try lowercase
+                            dll_file = dll_path / dll_name.lower()
+                        if dll_file.exists():
+                            cmd.extend(["-import", str(dll_file)])
+                            logger.info(f"Added DLL for symbol resolution: {dll_name}")
+                
                 # Analysis toggle comes after import
                 # NOTE: Analysis happens by default! Only add -noanalysis to disable it
                 if analysis_type == "basic":
@@ -1262,21 +1278,110 @@ for s in st.getAllSymbols(True):
         # Decompile all (basic)
         if analysis_type in ["decompile", "full"] and not (scripts_dir / "DecompileAll.py").exists():
             (scripts_dir / "DecompileAll.py").write_text('''
-# Decompile all functions (basic dump)
-from ghidra.app.decompiler import DecompInterface
+# Enhanced decompilation with better error handling and symbol resolution
+from ghidra.app.decompiler import DecompInterface, DecompileOptions
+from ghidra.app.decompiler.flatapi import FlatDecompilerAPI
+from ghidra.program.model.listing import Function
+from ghidra.program.model.symbol import SourceType
+from java.lang import Exception as JavaException
+
 program = getCurrentProgram()
 fm = program.getFunctionManager()
+
+# Enhanced decompiler interface with better options
 iface = DecompInterface()
+options = DecompileOptions()
+options.grabFromProgram(program)
+# Enable more thorough analysis
+options.setEliminateUnreachable(True)
+options.setSimplifyDoublePrecision(True)
+iface.setOptions(options)
 iface.openProgram(program)
-print("=== DECOMPILE ===")
-for f in fm.getFunctions(True):
+
+print("=== ENHANCED DECOMPILATION RESULTS ===")
+print("Binary: {}".format(program.getName()))
+print("Architecture: {}".format(program.getLanguage().getLanguageID()))
+print("Base Address: {}".format(program.getImageBase()))
+print("")
+
+# Get all functions, including those discovered during analysis
+functions = fm.getFunctions(True)
+func_count = 0
+decompiled_count = 0
+error_count = 0
+
+print("=== FUNCTION SUMMARY ===")
+for f in functions:
+    func_count += 1
+
+# Now decompile functions with enhanced error handling
+print("\\n=== DECOMPILED FUNCTIONS ===")
+for f in functions:
     try:
-        res = iface.decompileFunction(f, 60, monitor)
+        # Skip functions that are too small or likely data
+        if f.getBody().getNumAddresses() < 10:
+            continue
+            
+        print("\\n" + "="*60)
+        print("FUNCTION: {}".format(f.getName()))
+        print("ADDRESS: {}".format(f.getEntryPoint()))
+        print("SIZE: {} bytes".format(f.getBody().getNumAddresses()))
+        print("PARAMETERS: {}".format(f.getParameterCount()))
+        
+        # Get function signature info
+        sig = f.getSignature()
+        if sig:
+            print("SIGNATURE: {}".format(sig.getPrototypeString()))
+            
+        print("-" * 40)
+        
+        # Decompile with extended timeout for complex functions
+        timeout = 120 if f.getBody().getNumAddresses() > 1000 else 60
+        res = iface.decompileFunction(f, timeout, monitor)
+        
         if res and res.getDecompiledFunction():
-            print("FUNC {} @ {}".format(f.getName(), f.getEntryPoint()))
-            print(res.getDecompiledFunction().getC())
-    except:
-        pass
+            decompiled_func = res.getDecompiledFunction()
+            c_code = decompiled_func.getC()
+            if c_code and len(c_code.strip()) > 0:
+                print(c_code)
+                decompiled_count += 1
+            else:
+                print("// Decompilation produced empty result")
+                error_count += 1
+        else:
+            error_msg = "Unknown error"
+            if res:
+                error_msg = res.getErrorMessage()
+            print("// DECOMPILATION FAILED: {}".format(error_msg))
+            error_count += 1
+            
+    except JavaException as je:
+        print("// JAVA EXCEPTION: {}".format(str(je)))
+        error_count += 1
+    except Exception as e:
+        print("// PYTHON EXCEPTION: {}".format(str(e)))
+        error_count += 1
+
+print("\\n" + "="*60)
+print("=== DECOMPILATION SUMMARY ===")
+print("Total Functions Found: {}".format(func_count))
+print("Successfully Decompiled: {}".format(decompiled_count))
+print("Decompilation Errors: {}".format(error_count))
+if func_count > 0:
+    success_rate = (decompiled_count * 100.0) / func_count
+    print("Success Rate: {:.1f}%".format(success_rate))
+    
+    # Mark analysis as complete vs partial based on success rate
+    if success_rate >= 80:
+        print("ANALYSIS STATUS: COMPLETE")
+    elif success_rate >= 50:
+        print("ANALYSIS STATUS: MOSTLY_COMPLETE") 
+    else:
+        print("ANALYSIS STATUS: PARTIAL")
+else:
+    print("ANALYSIS STATUS: FAILED")
+
+iface.dispose()
 ''')
 
     async def _parse_analysis_results(

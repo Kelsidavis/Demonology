@@ -196,14 +196,22 @@ class DemonologyClient:
     
     def _detect_similar_patterns(self, buffer: List[str], threshold: float) -> bool:
         """Detect if content buffer contains similar patterns (not just exact matches)."""
-        if len(buffer) < 2:
+        if len(buffer) < 3:  # Need at least 3 similar chunks for a pattern
             return False
         
+        # Skip similarity check for structured output patterns
+        structured_indicators = ['FUNCTION:', 'ADDRESS:', '===', '---', 'DECOMPIL', 'GHIDRA', 'Binary:', 'Analysis']
+        if any(indicator in ''.join(buffer) for indicator in structured_indicators):
+            return False  # Don't trigger on structured analysis output
+        
         # Simple similarity check based on character overlap
+        similar_count = 0
         for i in range(len(buffer)):
             for j in range(i + 1, len(buffer)):
                 if self._calculate_similarity(buffer[i], buffer[j]) > threshold:
-                    return True
+                    similar_count += 1
+                    if similar_count >= 2:  # Need multiple similar pairs
+                        return True
         return False
     
     def _calculate_similarity(self, str1: str, str2: str) -> float:
@@ -468,11 +476,11 @@ class DemonologyClient:
         """
         # Enhanced repetition detection for autonomous coding reliability
         repetition_buffer = []
-        repetition_threshold = 5  # Increased back to 5 - be less aggressive
-        max_chunk_length = 1000   # Increased back to 1000 - allow longer responses
+        repetition_threshold = 8  # More lenient for structured output like Ghidra results
+        max_chunk_length = 2000   # Allow longer chunks for decompiled code
         pattern_buffer = []       # Track patterns, not just identical chunks
-        similarity_threshold = 0.8  # Detect similar (not just identical) content
-        min_content_length = 5    # Minimum content length to check for repetition
+        similarity_threshold = 0.9  # Higher threshold - only catch very similar content
+        min_content_length = 20   # Longer minimum to avoid false positives on short patterns
         url = f"{self.base_url}/chat/completions"
         payload = self._build_request_payload(messages, stream=True, tools=tools, **kwargs)
         
