@@ -30,6 +30,11 @@ tools:
     - "reddit_search"       # Search Reddit discussions
     - "project_planning"    # Generate and execute project plans
     - "image_generation"    # Generate AI images for textures, icons, assets
+    - "disassembler"        # Disassemble binary files using various disassemblers
+    - "hex_editor"          # Hex dump, search, and edit binary files
+    - "pattern_search"      # Search for patterns, strings, and signatures in binary files
+    - "debugger"            # Debug binaries using GDB with scripting support
+    - "ghidra_analysis"     # Perform headless binary analysis using Ghidra
   working_directory: null  # null means use current directory
 
 # Optional: Reddit API configuration for enhanced search
