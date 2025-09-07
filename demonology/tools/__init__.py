@@ -115,7 +115,7 @@ def create_default_registry() -> ToolRegistry:
                 _try_register(reg, getattr(mod, cls_name), report)
 
     # Music / Sheet OMR
-    mod, _ = _optional_import("sheet_music", ["SheetMusicOMRTool"])
+    mod, _ = _optional_import("sheet_music_omr", ["SheetMusicOMRTool"])
     if mod and hasattr(mod, "SheetMusicOMRTool"):
         _try_register(reg, getattr(mod, "SheetMusicOMRTool"), report)
 

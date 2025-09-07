@@ -8,7 +8,7 @@ tool integrations, and now: CLI history, scrollback control, free web search, RE
 - **Context Mastery**: smart trimming, `/context`, `/optimize`, `/trim smart`
 - **CLI QoL**: ↑/↓ history (Unix), `/history` popover, clean shutdown
 - **TUI QoL**: scrollback limit (env), smoother updates, safer theme switching
-- **Tool Arsenal**: file ops, code exec, project planning, image gen, **free web search**, **RE suite**, **audio SFX**
+- **Tool Arsenal**: file ops, code exec, project planning, image gen, **free web search**, **RE suite**, **audio SFX**, **3D models**, **sheet music OMR**
 
 ## 🚀 Quick Start
 ```bash
@@ -42,7 +42,7 @@ ui:
   theme: "amethyst"
 tools:
   enabled: true
-  allowed_tools: ["file_operations","code_execution","web_search","wikipedia_search","hackernews_search","stackoverflow_search","open_web_search","project_planning","image_generation","disassembler","hex_editor","pattern_search","debugger","ghidra_analysis","waveform_generator","synthesizer","audio_analysis","described_sfx"]
+  allowed_tools: ["file_operations","code_execution","web_search","wikipedia_search","hackernews_search","stackoverflow_search","open_web_search","project_planning","image_generation","disassembler","hex_editor","pattern_search","debugger","ghidra_analysis","waveform_generator","synthesizer","audio_analysis","described_sfx","model3d_generator","sheet_music_omr"]
 ```
 
 ## 🛠️ Tools (excerpt)
@@ -52,6 +52,8 @@ tools:
 - **Image**: generation via free backends
 - **RE**: objdump/radare2, Hex, Patterns (YARA), GDB, Ghidra
 - **Audio**: waveform, synth, analysis, *described SFX in key*
+- **3D Models**: procedural generation (spaceships, buildings, furniture, etc.) with colors/materials → OBJ/STL/GLB
+- **Music**: sheet music OMR → MusicXML/MIDI via Audiveris + music21 post-processing
 
 Use `/tools` or see `TOOLS.md` for full details.
 

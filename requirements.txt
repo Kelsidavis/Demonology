@@ -36,17 +36,18 @@ pytest>=8.0.0
 black>=24.4.0
 mypy>=1.10.0
 
-# --- Music / OMR (for sheet_music.py) ---
-music21>=8.1.0    # MusicXML/MIDI parsing & export
+# --- Music / OMR (for sheet_music_omr.py) ---
+music21>=9.1.0    # MusicXML/MIDI parsing & export, post-processing
 soundfile>=0.12.1 # WAV write; requires system lib: libsndfile
-music21
 
-#export AUDIVERIS_CLI=/opt/audiveris/bin/Audiveris
+# NOTE: Also requires Audiveris for OMR processing:
+# - Install from: https://github.com/Audiveris/audiveris
+# - Set AUDIVERIS_BIN environment variable or ensure 'audiveris' is in PATH
 
-
-# --- 3d model tool
-trimesh>=4.4.0
-numpy>=1.26.0
-Pillow>=10.3.0
-shapely>=2.0.4       # for SVG extrusion
-svgpathtools>=1.6.1  # for reading SVG paths
+# --- 3D Model Generator (enhanced) ---
+trimesh>=4.4.0     # Core 3D mesh processing
+numpy>=1.26.0      # Required by trimesh and for custom primitives
+Pillow>=10.3.0     # Image processing for textures
+shapely>=2.0.4     # Geometric operations and 2D->3D extrusion
+networkx>=3.0      # Graph operations for trimesh
+rtree>=1.0.0       # Spatial indexing for mesh operations
