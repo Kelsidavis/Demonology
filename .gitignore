@@ -135,3 +135,6 @@ conversation_*.md
 
 # Claude Code specific
 .claude/
+
+mpqcli/
+

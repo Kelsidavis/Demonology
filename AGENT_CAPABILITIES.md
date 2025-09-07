@@ -200,3 +200,5 @@ if res.get("success"):
 - `/logs` — print recent log entries
 
 ---
+
+WoW pipeline: MPQ extract → WDT/ADT terrain → M2/M3/WMO models → scene bundling (terrain tiles, model library, placements)

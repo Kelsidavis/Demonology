@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from .base import Tool, ToolRegistry
@@ -32,7 +31,6 @@ def _optional_import(module: str, names: List[str]) -> Tuple[Optional[object], D
         return None, {"module": module, "status": "missing", "reason": str(e)}
 
 def _optional_import_any(modules: List[str], names: List[str]) -> Tuple[Optional[object], Dict[str, Any]]:
-    """Try several module names; return the first that imports."""
     last_status: Dict[str, Any] = {}
     for modname in modules:
         mod, status = _optional_import(modname, names)
@@ -54,7 +52,7 @@ def remind_agent_capabilities() -> str:
         "- 3D: model generator/export (OBJ/STL/GLB/PLY via trimesh)\n"
         "- Heightmaps: PNG/JPG → 3D terrain, procedural generation (game engines)\n"
         "- Reverse engineering: objdump/r2/gdb/ghidra (if available)\n"
-        "- WoW maps: WDT/ADT → OBJ/GLB + 16-bit heightmaps\n"
+        "- WoW: MPQ extract → (WDT/ADT terrain) + (M2/M3/WMO models) → scene bundling\n"
         "Use ToolRegistry.call(name, **kwargs)."
     )
 
@@ -83,7 +81,7 @@ def create_default_registry() -> ToolRegistry:
         if hasattr(mod, "RedditSearchTool"):
             _try_register(reg, getattr(mod, "RedditSearchTool"), report)
 
-    # Free extras: Wikipedia, HackerNews, StackOverflow, OpenWebSearch
+    # Free extras
     mod, _ = _optional_import("web_free_extras", [
         "WikipediaSearchTool", "HackerNewsSearchTool", "StackOverflowSearchTool", "OpenWebSearchTool"
     ])
@@ -123,12 +121,12 @@ def create_default_registry() -> ToolRegistry:
             if hasattr(mod, cls_name):
                 _try_register(reg, getattr(mod, cls_name), report)
 
-    # Music / Sheet OMR  (try both module names)
+    # Music / Sheet OMR
     mod, _ = _optional_import_any(["sheet_music_omr", "sheet_music"], ["SheetMusicOMRTool"])
     if mod and hasattr(mod, "SheetMusicOMRTool"):
         _try_register(reg, getattr(mod, "SheetMusicOMRTool"), report)
 
-    # 3D Model Generator (accept legacy alias)
+    # 3D Model Generator
     mod, _ = _optional_import_any(["model3d_generator", "model3d"], ["Model3DGeneratorTool"])
     if mod and hasattr(mod, "Model3DGeneratorTool"):
         _try_register(reg, getattr(mod, "Model3DGeneratorTool"), report)
@@ -138,10 +136,30 @@ def create_default_registry() -> ToolRegistry:
     if mod and hasattr(mod, "HeightmapGeneratorTool"):
         _try_register(reg, getattr(mod, "HeightmapGeneratorTool"), report)
 
-    # WoW World Converter (new)
+    # WoW World Converter
     mod, _ = _optional_import("wow_world_converter", ["WoWWorldConverterTool"])
     if mod and hasattr(mod, "WoWWorldConverterTool"):
         _try_register(reg, getattr(mod, "WoWWorldConverterTool"), report)
+
+    # NEW: WoW Model Converter (M2/M3/WMO)
+    mod, _ = _optional_import("wow_model_converter", ["WoWModelConverterTool"])
+    if mod and hasattr(mod, "WoWModelConverterTool"):
+        _try_register(reg, getattr(mod, "WoWModelConverterTool"), report)
+
+    # NEW: Scene Bundler (terrain + models + placements)
+    mod, _ = _optional_import("wow_scene_bundler", ["WoWSceneBundlerTool"])
+    if mod and hasattr(mod, "WoWSceneBundlerTool"):
+        _try_register(reg, getattr(mod, "WoWSceneBundlerTool"), report)
+
+    # NEW: MPQ extractor
+    mod, _ = _optional_import("mpq_extractor", ["MPQExtractorTool"])
+    if mod and hasattr(mod, "MPQExtractorTool"):
+        _try_register(reg, getattr(mod, "MPQExtractorTool"), report)
+
+    # NEW: One-shot Orchestrator (MPQ -> terrain/models -> scene)
+    mod, _ = _optional_import("wow_archive_orchestrator", ["WoWArchiveOrchestratorTool"])
+    if mod and hasattr(mod, "WoWArchiveOrchestratorTool"):
+        _try_register(reg, getattr(mod, "WoWArchiveOrchestratorTool"), report)
 
     reg._load_report = report  # type: ignore[attr-defined]
     return reg
@@ -176,4 +194,3 @@ __all__ = [
     "create_default_registry", "load_all_tools", "load_available_tools",
     "to_openai_tools_format", "load_report", "remind_agent_capabilities",
 ]
-

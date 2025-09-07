@@ -33,12 +33,18 @@ security:
     - 'objdump'
     - 'gdb'
     - 'analyzeHeadless'
+    - 'mpq'   # if you’ll use the mpq-tools CLI backend
+
   # Tool names that are allowed to run. Unlisted tools will be blocked.
   allow_tools:
     - 'model3d_generator'
     - 'sheet_music_omr'
     - 'heightmap_generator'
     - 'wow_world_converter'
+    - 'wow_model_converter'
+    - 'wow_scene_bundler'
+    - 'mpq_extractor'
+    - 'wow_archive_orchestrator'
   # Absolute paths that tools are permitted to read/write (in addition to workspace_root).
   path_allowlist:
     - '/home/k/Desktop/ExtractedWoW'

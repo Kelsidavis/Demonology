@@ -56,3 +56,8 @@ rtree>=1.0.0       # Spatial indexing for mesh operations
 # open3d>=0.17.0      # Advanced mesh processing and cleanup
 # pymeshlab>=2022.2   # Professional mesh repair and optimization
 # NOTE: Uncomment above for enhanced mesh optimization capabilities
+
+# --- Optional: WoW formats & MPQ ---
+
+# MPQ reading (Python backend). Alternatively, install 'mpq' CLI (mpq-tools) system-wide.
+pympq
