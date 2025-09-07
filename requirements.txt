@@ -18,20 +18,24 @@ matplotlib>=3.8.0
 
 # --- Optional: Web search helpers ---
 # Our built-in web tools use httpx directly, so these are optional.
-# duckduckgo-search>=5.3.1
+duckduckgo-search>=5.3.1
 
 # --- Optional: Reverse engineering ---
 # Enable YARA pattern scans in reverse_eng.PatternSearchTool(search_type="yara")
-# yara-python>=4.4.0
+yara-python>=4.4.0
 
 # --- Optional: OCR ---
 # If you later add OCR to ImageAnalysisTool:
-# pytesseract>=0.3.10   # also install system package: tesseract-ocr
+pytesseract>=0.3.10   # also install system package: tesseract-ocr
 
 # --- Optional: Reddit (authenticated) ---
-# praw>=7.7.1
+praw>=7.7.1
 
 # --- Optional: Dev / QA ---
-# pytest>=8.0.0
-# black>=24.4.0
-# mypy>=1.10.0
+pytest>=8.0.0
+black>=24.4.0
+mypy>=1.10.0
+
+# --- Music / OMR (for sheet_music.py) ---
+music21>=8.1.0    # MusicXML/MIDI parsing & export
+soundfile>=0.12.1 # WAV write; requires system lib: libsndfile

@@ -94,15 +94,17 @@ and ethically in this workspace.
 
 ---
 
-### 7) 🎵 Audio Synthesis
+### 7) 🎵 Audio Synthesis & Sheet Music
 - **Waveform Generator** & **Synthesizer**
 - **Audio Analysis** for spectral features
 - **Described SFX**: create sweeps/noises from plain-English prompts; can quantize pitch ranges to a musical key (e.g. *A minor*) when requested
+- **Sheet Music OMR**: convert sheet music images/PDFs to MusicXML/MIDI/WAV using Audiveris
 
 **Examples**
 ```json
 {"tool": "described_sfx", "text": "a rising whoosh that lands on A4, in A minor", "duration": 2.5}
 {"tool": "synthesizer", "wave": "saw", "notes": ["A4","C5","E5"], "envelope": {"attack": 0.01, "release": 0.6}}
+{"tool": "sheet_music_omr", "input_path": "score.png", "make_midi": true, "make_wav": true, "tempo_bpm": 120}
 ```
 
 ---

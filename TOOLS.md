@@ -195,6 +195,25 @@ and **audio synthesis / described SFX** tools.
 
 ---
 
+## 🎼 Sheet Music OMR — **NEW**
+
+### Sheet Music OMR (`sheet_music_omr`)
+**Purpose**: Convert sheet music images/PDFs to MusicXML/MIDI/WAV using Audiveris OMR.
+**Params**: `input_path` (image/PDF/MusicXML), `output_stem` (default: "scores/output"), `omr_engine` ("auto"|"audiveris"|"none"), `make_midi` (bool=true), `make_wav` (bool=false), `tempo_bpm` (default: 100), `transpose_semitones` (int=0)
+
+**Requirements**: 
+- Optional: Audiveris (set `AUDIVERIS_CLI` or `AUDIVERIS_JAR` env vars)
+- Optional: `music21` for MIDI export
+- Optional: `numpy` + `soundfile` for basic WAV synthesis
+
+**Examples**
+```json
+{"name":"sheet_music_omr","arguments":{"input_path":"sheet.png","make_midi":true,"make_wav":true,"tempo_bpm":120}}
+{"name":"sheet_music_omr","arguments":{"input_path":"score.pdf","output_stem":"output/my_score","transpose_semitones":2}}
+```
+
+---
+
 ## 🔧 Configuration
 
 Edit `config.yaml`:

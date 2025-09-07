@@ -1,4 +1,3 @@
-
 # demonology/tools/__init__.py (robust, with free web search extras)
 from __future__ import annotations
 
@@ -45,6 +44,7 @@ def remind_agent_capabilities() -> str:
         "- Web search: DuckDuckGo IA, Reddit, Wikipedia, HackerNews, StackOverflow\n"
         "- Media: image generation/analysis\n"
         "- Audio: synthesis, analysis, described SFX (key-aware)\n"
+        "- Music: sheet OMR → MusicXML/MIDI/WAV (Audiveris/music21)\n"
         "- Reverse engineering: objdump/r2/gdb/ghidra (if available)\n"
         "Use ToolRegistry.call(name, **kwargs)."
     )
@@ -55,23 +55,23 @@ def create_default_registry() -> ToolRegistry:
 
     # Core modules
     mod, _ = _optional_import("file_ops", ["FileOperationsTool"])
-    if mod and hasattr(mod, "FileOperationsTool"):
+    if mod and hasattr(mod, "FileOperationsTool"): 
         _try_register(reg, getattr(mod, "FileOperationsTool"), report)
 
     mod, _ = _optional_import("codebase", ["CodebaseAnalysisTool"])
-    if mod and hasattr(mod, "CodebaseAnalysisTool"):
+    if mod and hasattr(mod, "CodebaseAnalysisTool"): 
         _try_register(reg, getattr(mod, "CodebaseAnalysisTool"), report)
 
     mod, _ = _optional_import("execution", ["CodeExecutionTool"])
-    if mod and hasattr(mod, "CodeExecutionTool"):
+    if mod and hasattr(mod, "CodeExecutionTool"): 
         _try_register(reg, getattr(mod, "CodeExecutionTool"), report)
 
     # Web tools
     mod, _ = _optional_import("web", ["WebSearchTool", "RedditSearchTool"])
     if mod:
-        if hasattr(mod, "WebSearchTool"):
+        if hasattr(mod, "WebSearchTool"): 
             _try_register(reg, getattr(mod, "WebSearchTool"), report)
-        if hasattr(mod, "RedditSearchTool"):
+        if hasattr(mod, "RedditSearchTool"): 
             _try_register(reg, getattr(mod, "RedditSearchTool"), report)
 
     # Free extras: Wikipedia, HackerNews, StackOverflow, OpenWebSearch
@@ -85,15 +85,15 @@ def create_default_registry() -> ToolRegistry:
 
     # Project planning
     mod, _ = _optional_import("project", ["ProjectPlanningTool"])
-    if mod and hasattr(mod, "ProjectPlanningTool"):
+    if mod and hasattr(mod, "ProjectPlanningTool"): 
         _try_register(reg, getattr(mod, "ProjectPlanningTool"), report)
 
     # Media
     mod, _ = _optional_import("media", ["ImageGenerationTool", "ImageAnalysisTool"])
     if mod:
-        if hasattr(mod, "ImageGenerationTool"):
+        if hasattr(mod, "ImageGenerationTool"): 
             _try_register(reg, getattr(mod, "ImageGenerationTool"), report)
-        if hasattr(mod, "ImageAnalysisTool"):
+        if hasattr(mod, "ImageAnalysisTool"): 
             _try_register(reg, getattr(mod, "ImageAnalysisTool"), report)
 
     # Reverse engineering
@@ -113,6 +113,11 @@ def create_default_registry() -> ToolRegistry:
         for cls_name in ["WaveformGeneratorTool", "SynthesizerTool", "AudioAnalysisTool", "DescribedSFXTool"]:
             if hasattr(mod, cls_name):
                 _try_register(reg, getattr(mod, cls_name), report)
+
+    # Music / Sheet OMR
+    mod, _ = _optional_import("sheet_music", ["SheetMusicOMRTool"])
+    if mod and hasattr(mod, "SheetMusicOMRTool"):
+        _try_register(reg, getattr(mod, "SheetMusicOMRTool"), report)
 
     reg._load_report = report  # type: ignore[attr-defined]
     return reg
