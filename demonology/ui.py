@@ -464,6 +464,9 @@ class DemonologyUI:
             # Regular input - add to history if non-empty
             if user_input.strip():
                 self.add_to_history(user_input)
+            
+            # Process escape sequences in user input
+            user_input = self._process_escape_sequences(user_input)
             return user_input
             
         except (KeyboardInterrupt, EOFError):
@@ -703,6 +706,9 @@ class DemonologyUI:
             # Use simple console input outside of the layout
             user_input = self.console.input(f"[{theme.get_color('primary')}]{symbols['bullet']} [/]")
             
+            # Process escape sequences
+            user_input = self._process_escape_sequences(user_input)
+            
             # Restart the layout
             if self.main_layout:
                 self._layout_live = Live(
@@ -750,13 +756,33 @@ class DemonologyUI:
             
             # Use history-enabled input
             user_input = self.get_input_with_history()
+            # Process escape sequences
+            user_input = self._process_escape_sequences(user_input)
             return user_input
             
         except KeyboardInterrupt:
             self.console.print("\n[dim]Interrupted by ancient forces...[/dim]")
             return "/quit"
-        except EOFError:
-            return "/quit"
+    
+    def _process_escape_sequences(self, text: str) -> str:
+        """Process escape sequences in user input."""
+        if not text:
+            return text
+        
+        # Handle common escape sequences
+        escape_sequences = {
+            '\\n': '\n',    # Newline
+            '\\t': '\t',    # Tab
+            '\\r': '\r',    # Carriage return
+            '\\\\': '\\',   # Literal backslash
+        }
+        
+        # Process each escape sequence
+        processed_text = text
+        for escape, replacement in escape_sequences.items():
+            processed_text = processed_text.replace(escape, replacement)
+        
+        return processed_text
     
     async def display_streaming_response(self, content_stream):
         """Display streaming response with live updates."""

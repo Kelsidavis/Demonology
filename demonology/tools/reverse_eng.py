@@ -866,9 +866,9 @@ class GhidraAnalysisTool(Tool):
                         "description": "Optional path to custom Ghidra script to run"
                     },
                     "timeout": {
-                        "type": "integer",
-                        "description": "Analysis timeout in seconds (default: 1800 for decompile/full, 300 for others)",
-                        "default": 1800
+                        "type": "integer", 
+                        "description": "Analysis timeout in seconds (default: 14400s/4h for decompile, 7200s/2h for analysis, 1800s/30m for basic)",
+                        "default": 14400
                     },
                     "dll_directory": {
                         "type": "string",
@@ -1013,9 +1013,11 @@ else:
         # Set appropriate timeout based on analysis type
         if timeout is None:
             if analysis_type in ["decompile", "full"]:
-                timeout = 3600  # 1 hour for decompilation
+                timeout = 14400  # 4 hours for decompilation (large game executables need time)
+            elif analysis_type in ["functions", "strings", "imports"]:
+                timeout = 7200   # 2 hours for analysis (complex binaries with many functions)
             else:
-                timeout = 600   # 10 minutes for basic analysis
+                timeout = 1800   # 30 minutes for basic analysis
         try:
             ghidra_headless = self._find_ghidra_headless()
             if not ghidra_headless:
@@ -1154,9 +1156,16 @@ else:
 
                 # Log the command being executed
                 logger.info(f"Executing Ghidra analysis: {' '.join(cmd)}")
-                logger.info(f"Analysis type: {analysis_type}, timeout: {timeout}s")
+                logger.info(f"Analysis type: {analysis_type}, timeout: {timeout}s ({timeout/3600:.1f} hours)")
                 if dll_directory:
                     logger.info(f"DLL directory specified: {dll_directory}")
+                
+                # Provide user guidance for long operations
+                if timeout >= 3600:  # 1+ hours
+                    hours = timeout / 3600
+                    logger.info(f"⏳ Long-running analysis detected ({hours:.1f}h timeout)")
+                    logger.info("💡 This is a complex binary - analysis may take significant time")
+                    logger.info("🔄 Analysis is running in background - you can continue using demonology")
                 
                 cmd_final = cmd[:]  # Simple copy
                 
@@ -1170,7 +1179,16 @@ else:
                 )
 
                 try:
-                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+                    # For long-running operations, provide periodic status updates
+                    if timeout >= 1800:  # 30+ minutes
+                        # Start a progress indicator task
+                        progress_task = asyncio.create_task(self._show_progress_updates(timeout))
+                        try:
+                            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+                        finally:
+                            progress_task.cancel()
+                    else:
+                        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
 
                             
                 except asyncio.TimeoutError:
@@ -1220,6 +1238,26 @@ else:
         except Exception as e:
             logger.exception("Ghidra analysis failed")
             return {"success": False, "error": f"Analysis failed: {str(e)}"}
+    
+    async def _show_progress_updates(self, total_timeout: int):
+        """Show periodic progress updates for long-running analysis."""
+        try:
+            interval = min(300, total_timeout // 10)  # Update every 5 minutes or 1/10th of timeout
+            elapsed = 0
+            
+            while elapsed < total_timeout:
+                await asyncio.sleep(interval)
+                elapsed += interval
+                
+                percentage = (elapsed / total_timeout) * 100
+                hours_elapsed = elapsed / 3600
+                hours_remaining = (total_timeout - elapsed) / 3600
+                
+                logger.info(f"🔄 Analysis progress: {percentage:.1f}% complete ({hours_elapsed:.1f}h elapsed, ~{hours_remaining:.1f}h remaining)")
+                
+        except asyncio.CancelledError:
+            logger.info("✅ Analysis completed!")
+            raise
 
     async def _create_analysis_scripts(self, temp_path: Path, analysis_type: str):
         """Create basic Ghidra analysis scripts."""

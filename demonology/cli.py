@@ -977,6 +977,26 @@ Config file: {cfg.config_path}
             self.ui.display_error(f"Diagnostic failed: {e}")
             logger.error(f"Diagnostic command error: {e}", exc_info=True)
     
+    def _process_escape_sequences(self, text: str) -> str:
+        """Process escape sequences in user input (backup processing)."""
+        if not text:
+            return text
+        
+        # Handle common escape sequences
+        escape_sequences = {
+            '\\n': '\n',    # Newline
+            '\\t': '\t',    # Tab
+            '\\r': '\r',    # Carriage return
+            '\\\\': '\\',   # Literal backslash
+        }
+        
+        # Process each escape sequence
+        processed_text = text
+        for escape, replacement in escape_sequences.items():
+            processed_text = processed_text.replace(escape, replacement)
+        
+        return processed_text
+    
     def _show_logs(self):
         """Display log file locations for debugging."""
         self.ui.display_info(f"📋 Log Files for Error Review:")
@@ -1697,6 +1717,9 @@ Config file: {cfg.config_path}
             try:
                 # Get initial user input
                 user_input = self.ui.get_user_input()
+                
+                # Ensure escape sequences are processed (backup processing)
+                user_input = self._process_escape_sequences(user_input)
 
                 # Handle timeout-based auto-continue
                 auto_continued = False
