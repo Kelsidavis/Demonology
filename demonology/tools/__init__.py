@@ -45,6 +45,7 @@ def remind_agent_capabilities() -> str:
         "- Audio: synthesis, analysis, described SFX (key-aware)\n"
         "- Music: sheet OMR → MusicXML/MIDI/WAV (Audiveris/music21)\n"
         "- 3D: model generator/export (OBJ/STL/GLB/PLY via trimesh)\n"
+        "- Heightmaps: PNG/JPG → 3D terrain, procedural generation (game engines)\n"
         "- Reverse engineering: objdump/r2/gdb/ghidra (if available)\n"
         "Use ToolRegistry.call(name, **kwargs)."
     )
@@ -123,6 +124,11 @@ def create_default_registry() -> ToolRegistry:
     mod, _ = _optional_import("model3d_generator", ["Model3DGeneratorTool"])
     if mod and hasattr(mod, "Model3DGeneratorTool"):
         _try_register(reg, getattr(mod, "Model3DGeneratorTool"), report)
+
+    # Heightmap Generator
+    mod, _ = _optional_import("heightmap_generator", ["HeightmapGeneratorTool"])
+    if mod and hasattr(mod, "HeightmapGeneratorTool"):
+        _try_register(reg, getattr(mod, "HeightmapGeneratorTool"), report)
 
     reg._load_report = report  # type: ignore[attr-defined]
     return reg

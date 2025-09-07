@@ -36,6 +36,7 @@ tools:
     - "debugger"            # Debug binaries using GDB with scripting support
     - "ghidra_analysis"     # Perform headless binary analysis using Ghidra
     - "model3d_generator"   # Generate 3d models
+    - "heightmap_generator" # Generate and convert heightmaps for 3D terrain
   working_directory: null  # null means use current directory
 
 # Optional: Reddit API configuration for enhanced search
