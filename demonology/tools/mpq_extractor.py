@@ -170,11 +170,18 @@ class MPQExtractorTool(Tool):
         out: List[Path] = []
         for p in inputs:
             pp = Path(p).expanduser().resolve()
-            if pp.is_file() and pp.suffix.lower() == ".mpq":
-                out.append(pp)
+            if pp.is_file():
+                # accept any case extension; prefer .mpq, but don't block if user passes exact file
+                if pp.suffix.lower() == ".mpq":
+                    out.append(pp)
+                else:
+                    out.append(pp)
             elif pp.is_dir():
-                out.extend(sorted(pp.rglob("*.mpq")))
-        return out
+                # case-insensitive scan for *.mpq
+                for cand in pp.rglob("*"):
+                    if cand.is_file() and cand.suffix.lower() == ".mpq":
+                        out.append(cand)
+        return sorted(set(out))
 
     def _parse_cli_list(self, out: str) -> List[str]:
         files: List[str] = []
