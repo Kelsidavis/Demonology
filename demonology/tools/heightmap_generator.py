@@ -3,12 +3,29 @@ from __future__ import annotations
 import math, os, random, re, time, logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from functools import partial
+import multiprocessing as mp
 try:
     import numpy as np
     import trimesh
     from PIL import Image
 except Exception:
     np = None; trimesh = None; Image = None
+
+try:
+    from numba import jit, njit, prange
+    HAS_NUMBA = True
+except Exception:
+    # Fallback decorators that do nothing
+    def jit(*args, **kwargs): 
+        def decorator(func): return func
+        return decorator
+    def njit(*args, **kwargs): 
+        def decorator(func): return func
+        return decorator
+    prange = range
+    HAS_NUMBA = False
 
 try:
     from .base import Tool
@@ -20,6 +37,75 @@ except Exception:
         async def execute(self, **kwargs) -> Dict[str, Any]: ...
 
 logger = logging.getLogger(__name__)
+
+# JIT-compiled helper functions for performance
+@njit(parallel=True, fastmath=True, cache=True)
+def _generate_noise_chunk_numba(
+    width: int,
+    height: int, 
+    offset_x: int,
+    offset_y: int,
+    total_width: int,
+    total_height: int,
+    octaves: int,
+    frequency: float,
+    amplitude: float,
+    lacunarity: float,
+    persistence: float
+) -> np.ndarray:
+    """JIT-compiled noise generation for a chunk"""
+    
+    chunk = np.zeros((height, width), dtype=np.float32)
+    
+    for octave in prange(octaves):
+        octave_frequency = frequency * (lacunarity ** octave)
+        octave_amplitude = amplitude * (persistence ** octave)
+        
+        for i in prange(height):
+            for j in prange(width):
+                # Global coordinates
+                global_x = (offset_x + j) * octave_frequency / total_width
+                global_y = (offset_y + i) * octave_frequency / total_height
+                
+                # Multi-wave noise
+                noise_value = (
+                    math.sin(global_x * 2 * math.pi) * math.cos(global_y * 2 * math.pi) +
+                    math.sin(global_x * 4 * math.pi + 1.5) * math.cos(global_y * 4 * math.pi + 1.5) * 0.5 +
+                    math.sin(global_x * 8 * math.pi + 3) * math.cos(global_y * 8 * math.pi + 3) * 0.25
+                ) / 1.75
+                
+                chunk[i, j] += noise_value * octave_amplitude
+    
+    return chunk
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _apply_mountain_shaping_numba(
+    heightmap: np.ndarray,
+    center_x: float,
+    center_y: float,
+    width: int,
+    height: int
+) -> np.ndarray:
+    """JIT-compiled mountain terrain shaping"""
+    
+    result = np.zeros_like(heightmap)
+    norm_factor = min(width, height)
+    
+    for i in prange(height):
+        for j in prange(width):
+            # Multiple peak centers with distance calculations
+            dist1 = math.sqrt((j - center_x)**2 + (i - center_y)**2) / norm_factor
+            dist2 = math.sqrt((j - center_x*0.3)**2 + (i - center_y*1.5)**2) / norm_factor
+            dist3 = math.sqrt((j - center_x*1.7)**2 + (i - center_y*0.4)**2) / norm_factor
+            
+            mountain_factor = (
+                math.exp(-dist1 * 3) * 0.8 + 
+                math.exp(-dist2 * 4) * 0.6 +
+                math.exp(-dist3 * 4) * 0.5
+            )
+            result[i, j] = heightmap[i, j] * 0.5 + mountain_factor
+    
+    return result
 
 class HeightmapGeneratorTool(Tool):
     """Generate and convert heightmaps for 3D terrain generation
@@ -433,6 +519,23 @@ class HeightmapGeneratorTool(Tool):
         resolution: int
     ) -> Dict[str, Any]:
         """Convert 2D heightmap array to 3D mesh"""
+    
+        # Patch: interpret `resolution` as downsample factor (1=full, 2=half, 4=quarter)
+    
+        try:
+    
+            step = max(1, int(resolution))
+    
+        except Exception:
+    
+            step = 1
+    
+        if step > 1:
+    
+            heightmap = heightmap[::step, ::step]
+    
+        
+
         
         try:
             height, width = heightmap.shape
@@ -448,42 +551,32 @@ class HeightmapGeneratorTool(Tool):
             z_scale = scale["z"] / (height - 1) 
             y_scale = scale["y"]
             
-            # Generate vertices
-            vertices = []
-            for i in range(height):
-                for j in range(width):
-                    x = j * x_scale - scale["x"] / 2  # Center on origin
-                    z = i * z_scale - scale["z"] / 2
-                    y = heightmap[i, j] * y_scale
-                    vertices.append([x, y, z])
+            # Use optimized mesh generation based on size
+            if height * width > 50000:  # Use parallel processing for large meshes
+                return self._heightmap_to_mesh_parallel(heightmap, scale, resolution)
             
-            vertices = np.array(vertices)
+            # Generate vertices using vectorized operations
+            i_coords, j_coords = np.meshgrid(np.arange(height), np.arange(width), indexing='ij')
             
-            # Generate faces (triangles)
-            faces = []
-            for i in range(height - 1):
-                for j in range(width - 1):
-                    # Current quad vertices (clockwise winding)
-                    v0 = i * width + j
-                    v1 = i * width + (j + 1)
-                    v2 = (i + 1) * width + (j + 1)
-                    v3 = (i + 1) * width + j
-                    
-                    # Split quad into two triangles
-                    faces.append([v0, v1, v2])
-                    faces.append([v0, v2, v3])
+            # Vectorized vertex calculation
+            x = j_coords * x_scale - scale["x"] / 2  # Center on origin
+            z = i_coords * z_scale - scale["z"] / 2
+            y = heightmap * y_scale
             
-            faces = np.array(faces)
+            # Stack coordinates and reshape to vertex array
+            vertices = np.stack([x.ravel(), y.ravel(), z.ravel()], axis=1)
+            
+            # Generate faces using vectorized operations
+            faces = self._generate_faces_vectorized(height, width)
             
             # Create mesh
             mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
             
-            # Generate UV coordinates
-            uvs = np.zeros((len(vertices), 2))
-            for i in range(height):
-                for j in range(width):
-                    idx = i * width + j
-                    uvs[idx] = [j / (width - 1), i / (height - 1)]
+            # Generate UV coordinates using vectorized operations
+            uvs = np.stack([
+                j_coords.ravel() / (width - 1),
+                i_coords.ravel() / (height - 1)
+            ], axis=1)
             
             # Add UV coordinates to mesh
             try:
@@ -495,6 +588,198 @@ class HeightmapGeneratorTool(Tool):
             
         except Exception as e:
             return {"success": False, "error": f"Mesh generation failed: {e}"}
+    
+    def _generate_faces_vectorized(self, height: int, width: int) -> np.ndarray:
+        """Generate mesh faces using vectorized operations"""
+        
+        # Create index arrays for quads
+        i_indices = np.arange(height - 1)
+        j_indices = np.arange(width - 1)
+        
+        # Create meshgrid of quad indices
+        i_grid, j_grid = np.meshgrid(i_indices, j_indices, indexing='ij')
+        
+        # Calculate vertex indices for each quad
+        v0 = i_grid * width + j_grid
+        v1 = i_grid * width + (j_grid + 1)
+        v2 = (i_grid + 1) * width + (j_grid + 1)
+        v3 = (i_grid + 1) * width + j_grid
+        
+        # Create triangular faces (2 per quad)
+        faces1 = np.stack([v0.ravel(), v1.ravel(), v2.ravel()], axis=1)
+        faces2 = np.stack([v0.ravel(), v2.ravel(), v3.ravel()], axis=1)
+        
+        # Combine all faces
+        faces = np.vstack([faces1, faces2])
+        return faces
+    
+    def _heightmap_to_mesh_parallel(
+        self, 
+        heightmap: np.ndarray, 
+        scale: Dict[str, float], 
+        resolution: int
+    ) -> Dict[str, Any]:
+        """Convert large heightmap to mesh using parallel processing"""
+        
+        try:
+            height, width = heightmap.shape
+            
+            # Calculate world coordinates
+            x_scale = scale["x"] / (width - 1)
+            z_scale = scale["z"] / (height - 1) 
+            y_scale = scale["y"]
+            
+            # Determine optimal chunk size for parallel processing
+            num_cores = min(mp.cpu_count(), 8)  # Limit to 8 cores max
+            chunk_size = max(100, height // num_cores)
+            
+            # Split heightmap into chunks for parallel processing
+            chunks = []
+            for i in range(0, height, chunk_size):
+    
+        # Patch: UVs based on world x/z extents (0..1)
+    
+        try:
+    
+            import numpy as _np
+    
+            uvs = _np.empty((len(vertices), 2), dtype=_np.float32)
+    
+            denom_x = max(1e-9, scale.get('x', 1.0))
+    
+            denom_z = max(1e-9, scale.get('z', 1.0))
+    
+            uvs[:, 0] = (vertices[:, 0] + denom_x / 2.0) / denom_x
+    
+            uvs[:, 1] = (vertices[:, 2] + denom_z / 2.0) / denom_z
+    
+            mesh.visual = trimesh.visual.TextureVisuals(uv=uvs)
+    
+        except Exception:
+    
+            pass
+    
+        
+                end_i = min(i + chunk_size, height)
+                chunk_data = {
+                    'heightmap_chunk': heightmap[i:end_i, :],
+                    'start_row': i,
+                    'x_scale': x_scale,
+                    'z_scale': z_scale,
+                    'y_scale': y_scale,
+                    'scale': scale,
+                    'width': width
+                }
+                chunks.append(chunk_data)
+            
+            # Process chunks in parallel
+            with ThreadPoolExecutor(max_workers=num_cores) as executor:
+                chunk_results = list(executor.map(self._process_mesh_chunk, chunks))
+            
+            # Combine results
+            all_vertices = []
+            all_faces = []
+            vertex_offset = 0
+            
+            for vertices, faces in chunk_results:
+                all_vertices.append(vertices)
+                # Adjust face indices for vertex offset
+                adjusted_faces = faces + vertex_offset
+                all_faces.append(adjusted_faces)
+                vertex_offset += len(vertices)
+            
+            # Combine all vertices and faces
+            vertices = np.vstack(all_vertices)
+            faces = np.vstack(all_faces)
+            
+            # Create mesh
+            mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+            
+            
+    
+        # Patch: UVs based on world x/z extents (0..1)
+    
+        try:
+    
+            import numpy as _np
+    
+            uvs = _np.empty((len(vertices), 2), dtype=_np.float32)
+    
+            denom_x = max(1e-9, scale.get('x', 1.0))
+    
+            denom_z = max(1e-9, scale.get('z', 1.0))
+    
+            uvs[:, 0] = (vertices[:, 0] + denom_x / 2.0) / denom_x
+    
+            uvs[:, 1] = (vertices[:, 2] + denom_z / 2.0) / denom_z
+    
+            mesh.visual = trimesh.visual.TextureVisuals(uv=uvs)
+    
+        except Exception:
+    
+            pass
+    
+        
+# Generate UV coordinates
+            total_vertices = len(vertices)
+            uvs = np.zeros((total_vertices, 2))
+            idx = 0
+            for i in range(height):
+                for j in range(width):
+                    if idx < total_vertices:
+                        uvs[idx] = [j / (width - 1), i / (height - 1)]
+                        idx += 1
+            
+            # Add UV coordinates to mesh
+            try:
+                mesh.visual = trimesh.visual.TextureVisuals(uv=uvs)
+            except:
+                pass  # UV mapping optional
+            
+            return {"success": True, "mesh": mesh}
+            
+        except Exception as e:
+            return {"success": False, "error": f"Parallel mesh generation failed: {e}"}
+    
+    def _process_mesh_chunk(self, chunk_data: Dict) -> Tuple[np.ndarray, np.ndarray]:
+        """Process a chunk of heightmap into vertices and faces"""
+        
+        heightmap_chunk = chunk_data['heightmap_chunk']
+        start_row = chunk_data['start_row']
+        x_scale = chunk_data['x_scale']
+        z_scale = chunk_data['z_scale']
+        y_scale = chunk_data['y_scale']
+        scale = chunk_data['scale']
+        total_width = chunk_data['width']
+        
+        chunk_height, chunk_width = heightmap_chunk.shape
+        
+        # Generate vertices for this chunk
+        i_coords, j_coords = np.meshgrid(
+            np.arange(chunk_height) + start_row, 
+            np.arange(chunk_width), 
+            indexing='ij'
+        )
+        
+        # Vectorized vertex calculation
+        x = j_coords * x_scale - scale["x"] / 2
+        z = i_coords * z_scale - scale["z"] / 2
+        y = heightmap_chunk * y_scale
+        
+        vertices = np.stack([x.ravel(), y.ravel(), z.ravel()], axis=1)
+        
+        # Generate faces for this chunk (only if not the last row chunk)
+        if start_row + chunk_height < heightmap_chunk.shape[0] + start_row:
+            faces = self._generate_faces_vectorized(chunk_height, chunk_width)
+        else:
+            # For the last chunk, generate faces only for complete quads
+            if chunk_height > 1:
+                faces = self._generate_faces_vectorized(chunk_height, chunk_width)
+            else:
+                faces = np.array([]).reshape(0, 3)
+        
+        return vertices, faces
+    
     
     def _generate_procedural_heightmap(
         self,
@@ -541,93 +826,97 @@ class HeightmapGeneratorTool(Tool):
         lacunarity: float,
         persistence: float
     ) -> np.ndarray:
-        """Generate multi-octave Perlin-like noise"""
+        """Generate multi-octave Perlin-like noise using vectorized operations"""
         
         heightmap = np.zeros((height, width), dtype=np.float32)
         
+        # Pre-compute coordinate meshgrids for vectorization
+        j_coords, i_coords = np.meshgrid(np.arange(width), np.arange(height))
+        
         for octave in range(octaves):
-            # Simple noise approximation using sine waves
-            # (Replace with proper Perlin noise library for production)
             octave_frequency = frequency * (lacunarity ** octave)
             octave_amplitude = amplitude * (persistence ** octave)
             
-            for i in range(height):
-                for j in range(width):
-                    x = j * octave_frequency / width
-                    y = i * octave_frequency / height
-                    
-                    # Combine multiple sine waves for noise-like appearance
-                    noise_value = (
-                        math.sin(x * 2 * math.pi) * math.cos(y * 2 * math.pi) +
-                        math.sin(x * 4 * math.pi + 1.5) * math.cos(y * 4 * math.pi + 1.5) * 0.5 +
-                        math.sin(x * 8 * math.pi + 3) * math.cos(y * 8 * math.pi + 3) * 0.25
-                    ) / 1.75
-                    
-                    heightmap[i, j] += noise_value * octave_amplitude
+            # Vectorized coordinate calculations
+            x = j_coords * octave_frequency / width
+            y = i_coords * octave_frequency / height
+            
+            # Vectorized multi-wave noise generation
+            noise_layer = (
+                np.sin(x * 2 * np.pi) * np.cos(y * 2 * np.pi) +
+                np.sin(x * 4 * np.pi + 1.5) * np.cos(y * 4 * np.pi + 1.5) * 0.5 +
+                np.sin(x * 8 * np.pi + 3) * np.cos(y * 8 * np.pi + 3) * 0.25
+            ) / 1.75
+            
+            # Add octave contribution
+            heightmap += noise_layer * octave_amplitude
         
         return heightmap
     
     def _apply_terrain_shaping(self, heightmap: np.ndarray, terrain_type: str) -> np.ndarray:
-        """Apply terrain-specific shaping to heightmap"""
+        """Apply terrain-specific shaping to heightmap using vectorized operations"""
         
         height, width = heightmap.shape
         center_x, center_y = width // 2, height // 2
         
+        # Pre-compute coordinate meshgrids for vectorization
+        j_coords, i_coords = np.meshgrid(np.arange(width), np.arange(height))
+        
         if terrain_type == "mountains":
-            # Add mountain peaks using distance from center
-            for i in range(height):
-                for j in range(width):
-                    # Multiple peak centers
-                    dist1 = math.sqrt((j - center_x)**2 + (i - center_y)**2) / min(width, height)
-                    dist2 = math.sqrt((j - center_x*0.3)**2 + (i - center_y*1.5)**2) / min(width, height)
-                    dist3 = math.sqrt((j - center_x*1.7)**2 + (i - center_y*0.4)**2) / min(width, height)
-                    
-                    mountain_factor = (
-                        math.exp(-dist1 * 3) * 0.8 + 
-                        math.exp(-dist2 * 4) * 0.6 +
-                        math.exp(-dist3 * 4) * 0.5
-                    )
-                    heightmap[i, j] = heightmap[i, j] * 0.5 + mountain_factor
+            # Use JIT-compiled version if available, otherwise vectorized version
+            if HAS_NUMBA and width * height > 10000:
+                heightmap = _apply_mountain_shaping_numba(
+                    heightmap, float(center_x), float(center_y), width, height
+                )
+            else:
+                # Vectorized mountain peak generation
+                norm_factor = min(width, height)
+                
+                # Multiple peak centers with vectorized distance calculations
+                dist1 = np.sqrt((j_coords - center_x)**2 + (i_coords - center_y)**2) / norm_factor
+                dist2 = np.sqrt((j_coords - center_x*0.3)**2 + (i_coords - center_y*1.5)**2) / norm_factor
+                dist3 = np.sqrt((j_coords - center_x*1.7)**2 + (i_coords - center_y*0.4)**2) / norm_factor
+                
+                mountain_factor = (
+                    np.exp(-dist1 * 3) * 0.8 + 
+                    np.exp(-dist2 * 4) * 0.6 +
+                    np.exp(-dist3 * 4) * 0.5
+                )
+                heightmap = heightmap * 0.5 + mountain_factor
         
         elif terrain_type == "hills":
-            # Gentle rolling hills
+            # Already vectorized - no change needed
             heightmap = heightmap * 0.6 + 0.2
             
         elif terrain_type == "plains":
-            # Flat with gentle undulation  
+            # Already vectorized - no change needed
             heightmap = heightmap * 0.3 + 0.1
             
         elif terrain_type == "canyon":
-            # Deep canyon in center
-            for i in range(height):
-                for j in range(width):
-                    # Distance from center line
-                    center_line_dist = abs(j - center_x) / width
-                    canyon_depth = math.exp(-center_line_dist * 8) * 0.8
-                    heightmap[i, j] = heightmap[i, j] * 0.7 + 0.3 - canyon_depth
+            # Vectorized canyon generation
+            center_line_dist = np.abs(j_coords - center_x) / width
+            canyon_depth = np.exp(-center_line_dist * 8) * 0.8
+            heightmap = heightmap * 0.7 + 0.3 - canyon_depth
         
         elif terrain_type == "islands":
-            # Island shape with water edges
-            for i in range(height):
-                for j in range(width):
-                    edge_dist = min(i, j, height-1-i, width-1-j) / min(width, height) * 2
-                    island_factor = math.tanh(edge_dist * 3) * 0.8
-                    heightmap[i, j] = heightmap[i, j] * island_factor
+            # Vectorized island shaping
+            edge_dist = np.minimum(
+                np.minimum(i_coords, j_coords),
+                np.minimum(height - 1 - i_coords, width - 1 - j_coords)
+            ) / min(width, height) * 2
+            island_factor = np.tanh(edge_dist * 3) * 0.8
+            heightmap = heightmap * island_factor
         
         elif terrain_type == "desert":
-            # Sand dunes
-            for i in range(height):
-                for j in range(width):
-                    dune_wave = math.sin(j * 0.02) * math.cos(i * 0.015) * 0.3
-                    heightmap[i, j] = heightmap[i, j] * 0.4 + dune_wave + 0.2
+            # Vectorized sand dunes
+            dune_wave = np.sin(j_coords * 0.02) * np.cos(i_coords * 0.015) * 0.3
+            heightmap = heightmap * 0.4 + dune_wave + 0.2
         
         elif terrain_type == "valleys":
-            # Valley system 
-            for i in range(height):
-                for j in range(width):
-                    valley_x = abs(math.sin(j * 0.01)) * 0.5
-                    valley_y = abs(math.sin(i * 0.008)) * 0.4
-                    heightmap[i, j] = heightmap[i, j] * 0.6 + valley_x + valley_y
+            # Vectorized valley system
+            valley_x = np.abs(np.sin(j_coords * 0.01)) * 0.5
+            valley_y = np.abs(np.sin(i_coords * 0.008)) * 0.4
+            heightmap = heightmap * 0.6 + valley_x + valley_y
         
         return heightmap
     
@@ -832,50 +1121,76 @@ class HeightmapGeneratorTool(Tool):
             # Diffuse map (color based on height)
             diffuse = np.zeros((height, width, 3), dtype=np.uint8)
             for i in range(height):
-                for j in range(width):
-                    h = heightmap[i, j]
-                    if h < 0.3:  # Water/low areas - blue
-                        diffuse[i, j] = [50, 100, 200]
-                    elif h < 0.5:  # Plains - green  
-                        diffuse[i, j] = [100, 180, 80]
-                    elif h < 0.8:  # Hills - brown
-                        diffuse[i, j] = [140, 120, 80]
-                    else:  # Mountains - gray/white
-                        diffuse[i, j] = [200, 200, 220]
-            
-            diffuse_path = f"{basename}_diffuse.png"
-            Image.fromarray(diffuse).save(diffuse_path)
-            paths.append(diffuse_path)
-            
-            # Normal map (calculated from height gradients)
-            normal_map = self._calculate_normal_map(heightmap, scale)
-            normal_path = f"{basename}_normal.png"
-            Image.fromarray(normal_map).save(normal_path)
-            paths.append(normal_path)
-            
-            # Splat map (texture blending weights)
-            splat = np.zeros((height, width, 4), dtype=np.uint8) 
-            for i in range(height):
-                for j in range(width):
-                    h = heightmap[i, j]
-                    # R: grass, G: dirt, B: rock, A: snow
-                    if h < 0.4:
-                        splat[i, j] = [255, 50, 0, 0]  # Grass
-                    elif h < 0.7:
-                        splat[i, j] = [100, 255, 100, 0]  # Dirt + grass
-                    elif h < 0.9:
-                        splat[i, j] = [0, 100, 255, 0]  # Rock
-                    else:
-                        splat[i, j] = [0, 0, 50, 255]  # Snow
-            
-            splat_path = f"{basename}_splat.png"
-            Image.fromarray(splat).save(splat_path)
-            paths.append(splat_path)
-            
-            return {"success": True, "paths": paths}
-            
-        except Exception as e:
-            return {"success": False, "error": f"Texture generation failed: {e}"}
+    
+        import numpy as np
+    
+        h, w = heightmap.shape
+    
+        # Diffuse map
+    
+        diffuse = np.zeros((h, w, 3), dtype=np.uint8)
+    
+        m1 = heightmap < 0.3
+    
+        m2 = (heightmap >= 0.3) & (heightmap < 0.5)
+    
+        m3 = (heightmap >= 0.5) & (heightmap < 0.8)
+    
+        m4 = heightmap >= 0.8
+    
+        diffuse[m1] = [50, 100, 200]
+    
+        diffuse[m2] = [100, 180, 80]
+    
+        diffuse[m3] = [140, 120, 80]
+    
+        diffuse[m4] = [200, 200, 220]
+    
+        
+    
+        # Normal map via gradient
+    
+        dz, dx = np.gradient(heightmap.astype(np.float32))
+    
+        scale_x = scale.get('y', 1.0) / max(1e-9, scale.get('x', 1.0))
+    
+        scale_z = scale.get('y', 1.0) / max(1e-9, scale.get('z', 1.0))
+    
+        dx *= scale_x; dz *= scale_z
+    
+        normal = np.dstack((-dx, np.full_like(dx, 2.0), -dz))
+    
+        norm = np.linalg.norm(normal, axis=2, keepdims=True)
+    
+        normal = normal / np.maximum(norm, 1e-9)
+    
+        normal_map = ((normal + 1.0) * 127.5).astype(np.uint8)
+    
+        
+    
+        # Splat map
+    
+        splat = np.zeros((h, w, 4), dtype=np.uint8)
+    
+        s1 = heightmap < 0.4
+    
+        s2 = (heightmap >= 0.4) & (heightmap < 0.7)
+    
+        s3 = (heightmap >= 0.7) & (heightmap < 0.9)
+    
+        s4 = heightmap >= 0.9
+    
+        splat[s1] = [255, 50, 0, 0]
+    
+        splat[s2] = [100, 255, 100, 0]
+    
+        splat[s3] = [0, 100, 255, 0]
+    
+        splat[s4] = [0, 0, 50, 255]
+    
+        return {'diffuse': diffuse, 'normal': normal_map, 'splat': splat}
+    
+        
     
     def _calculate_normal_map(self, heightmap: np.ndarray, scale: Dict[str, float]) -> np.ndarray:
         """Calculate normal map from heightmap gradients"""
@@ -1496,6 +1811,15 @@ class HeightmapGeneratorTool(Tool):
     ) -> np.ndarray:
         """Generate noise for a specific chunk with proper global coordinates"""
         
+        # Use JIT-compiled version if available for better performance
+        if HAS_NUMBA:
+            return _generate_noise_chunk_numba(
+                chunk_width, chunk_height, offset_x, offset_y,
+                total_width, total_height, octaves, frequency,
+                amplitude, lacunarity, persistence
+            )
+        
+        # Fallback to regular implementation
         chunk = np.zeros((chunk_height, chunk_width), dtype=np.float32)
         
         for octave in range(octaves):
