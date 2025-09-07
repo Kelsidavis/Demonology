@@ -53,6 +53,7 @@ def remind_agent_capabilities() -> str:
         "- Heightmaps: PNG/JPG → 3D terrain, procedural generation (game engines)\n"
         "- Reverse engineering: objdump/r2/gdb/ghidra (if available)\n"
         "- WoW: MPQ extract → (WDT/ADT terrain) + (M2/M3/WMO models) → scene bundling\n"
+        "- WoW to Unreal: Complete asset pipeline (M2→FBX, BLP→PNG/TGA, BLS→Materials, DBC→DataTables)\n"
         "Use ToolRegistry.call(name, **kwargs)."
     )
 
@@ -186,6 +187,27 @@ def create_default_registry() -> ToolRegistry:
     mod, _ = _optional_import("unreal_build", ["UnrealBuildTool"])
     if mod and hasattr(mod, "UnrealBuildTool"):
         _try_register(reg, getattr(mod, "UnrealBuildTool"), report)
+
+    # WoW Asset Conversion Toolset
+    mod, _ = _optional_import("wow_m2_converter", ["WoWM2ModelTool"])
+    if mod and hasattr(mod, "WoWM2ModelTool"):
+        _try_register(reg, getattr(mod, "WoWM2ModelTool"), report)
+
+    mod, _ = _optional_import("wow_blp_texture", ["WoWBLPTextureTool"])
+    if mod and hasattr(mod, "WoWBLPTextureTool"):
+        _try_register(reg, getattr(mod, "WoWBLPTextureTool"), report)
+
+    mod, _ = _optional_import("wow_bls_shader", ["WoWBLSShaderTool"])
+    if mod and hasattr(mod, "WoWBLSShaderTool"):
+        _try_register(reg, getattr(mod, "WoWBLSShaderTool"), report)
+
+    mod, _ = _optional_import("wow_dbc_parser", ["WoWDBCParserTool"])
+    if mod and hasattr(mod, "WoWDBCParserTool"):
+        _try_register(reg, getattr(mod, "WoWDBCParserTool"), report)
+
+    mod, _ = _optional_import("wow_to_unreal", ["WoWToUnrealTool"])
+    if mod and hasattr(mod, "WoWToUnrealTool"):
+        _try_register(reg, getattr(mod, "WoWToUnrealTool"), report)
 
     reg._load_report = report  # type: ignore[attr-defined]
     return reg
