@@ -39,3 +39,14 @@ mypy>=1.10.0
 # --- Music / OMR (for sheet_music.py) ---
 music21>=8.1.0    # MusicXML/MIDI parsing & export
 soundfile>=0.12.1 # WAV write; requires system lib: libsndfile
+music21
+
+#export AUDIVERIS_CLI=/opt/audiveris/bin/Audiveris
+
+
+# --- 3d model tool
+trimesh>=4.4.0
+numpy>=1.26.0
+Pillow>=10.3.0
+shapely>=2.0.4       # for SVG extrusion
+svgpathtools>=1.6.1  # for reading SVG paths

@@ -1,5 +1,3 @@
-
-# demonology/tools/audio.py (patched)
 from __future__ import annotations
 
 import io
@@ -523,6 +521,29 @@ def _quantize_hz_to_key(freq: float, tonic: str, mode: str) -> tuple[float,str]:
     snapped_hz = _midi_to_hz(best_m)
     return snapped_hz, _note_name_from_midi(best_m)
 
+# New helpers for melodic rendering
+def _parse_bpm(text: str, default: float = 100.0) -> float:
+    m = re.search(r'(\d{2,3})\s*bpm', text.lower())
+    if m:
+        bpm = float(m.group(1))
+    else:
+        m2 = re.search(r'\b(\d{2,3})\b', text)
+        bpm = float(m2.group(1)) if m2 else default
+    return float(max(30.0, min(220.0, bpm)))
+
+def _parse_rhythm(text: str) -> float:
+    t = text.lower()
+    if '16th' in t or 'sixteenth' in t: return 0.25
+    if '8th' in t or 'eighth' in t: return 0.5
+    if 'half' in t: return 2.0
+    if 'whole' in t: return 4.0
+    return 1.0  # quarter by default
+
+def _phrase_pattern(name: str = "arched") -> List[int]:
+    if name == "steps":   return [0,1,2,3,4,3,2,1]
+    if name == "leaps":   return [0,2,4,7,4,2,0,-2]
+    return [0,2,4,5,7,5,4,2]  # arched
+
 # ============================================================
 # Text-described sound effects & musical noises (key-aware)
 # ============================================================
@@ -530,11 +551,11 @@ def _quantize_hz_to_key(freq: float, tonic: str, mode: str) -> tuple[float,str]:
 class DescribedSFXTool(Tool):
     """
     Turn short natural-language descriptions into rendered SFX/music-y noises.
-    Rule-based mapping -> safe synthesis chain (no heavy libs). Supports optional musical keys.
+    Now with *melodic* rendering when description suggests melody/tempo/rhythm.
     """
 
     def __init__(self):
-        super().__init__("audio_describe", "Render described noises and musical effects into WAV files.")
+        super().__init__("audio_describe", "Render described noises and musical effects into WAV files (melodic if requested).")
 
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -543,12 +564,12 @@ class DescribedSFXTool(Tool):
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "description": {"type": "string", "description": "Short prompt like 'airy whoosh riser with shimmer'"},
+                    "description": {"type": "string", "description": "e.g., 'flute melody in G major, 8th notes at 62 BPM' or 'airy whoosh riser'"},
                     "duration": {"type": "number", "description": f"Seconds (≤ {MAX_DURATION_SEC})", "default": 2.5},
                     "sample_rate": {"type": "integer", "description": f"Hz (≤ {MAX_SAMPLE_RATE})", "default": 44100},
                     "output_file": {"type": "string", "description": "Relative path under workspace", "default": "sfx.wav"},
                     "stereo": {"type": "boolean", "description": "Duplicate mono to L/R", "default": True},
-                    "key": {"type": "string", "description": "e.g., 'A minor', 'F# major' (quantizes sweep endpoints)"}
+                    "key": {"type": "string", "description": "e.g., 'A minor', 'F# major' (quantizes melody or sweep)"}
                 },
                 "required": ["description", "output_file"]
             }
@@ -564,14 +585,13 @@ class DescribedSFXTool(Tool):
         key: Optional[str] = None,
         **_,
     ) -> Dict[str, Any]:
-        # Safety first
         err = _validate_sr_duration(sample_rate, duration)
         if err:
             return {"success": False, "error": err}
 
         try:
             spec = self._interpret(description, key)
-            x, music_meta = self._render_chain(spec, duration, sample_rate)
+            x, music_meta = self._render_chain(spec, duration, sample_rate, description)
             if stereo:
                 x = np.stack([x, x], axis=1)
 
@@ -590,13 +610,15 @@ class DescribedSFXTool(Tool):
                 "music": music_meta,
             }
         except Exception as e:
+            logger.exception("audio_describe failed")
             return {"success": False, "error": str(e)}
 
     # ---------- prompt interpretation ----------
 
     def _interpret(self, text: str, key_param: Optional[str] = None) -> Dict[str, Any]:
         """
-        Very lightweight tagger -> parameter spec.
+        Lightweight tagger -> parameter spec.
+        Detects when the user wants a *melody* (vs a single sweep/noise).
         """
         t = (text or "").lower()
 
@@ -612,13 +634,21 @@ class DescribedSFXTool(Tool):
         if any(k in t for k in ["alert", "notification"]): preset = "alert"
         if any(k in t for k in ["glitch", "stutter"]): preset = "glitch"
 
+        # ---- melody detection ----
+        wants_melody = any(k in t for k in [
+            "melody", "melodic", "notes", "arpeggio", "arpeggios", "lead",
+            "bpm", "tempo", "8th", "eighth", "16th", "sixteenth", "quarter", "half", "whole"
+        ])
+        rhythm_beats = _parse_rhythm(t)
+        bpm = _parse_bpm(t, default=100.0)
+
         # timbre hints
         noise = None
         if any(k in t for k in ["air", "airy", "breath", "wind", "shh"]): noise = "pink"
         if any(k in t for k in ["harsh", "static", "noisy"]): noise = "white"
 
         osc = None
-        if any(k in t for k in ["hollow", "organ"]): osc = "sine"
+        if any(k in t for k in ["flute", "hollow", "organ"]): osc = "sine"
         if any(k in t for k in ["buzzy", "saw"]): osc = "saw"
         if any(k in t for k in ["nasal", "square"]): osc = "square"
 
@@ -675,11 +705,26 @@ class DescribedSFXTool(Tool):
 
         # Resolve key from param or text
         resolved = _key_from_text_or_param(text, key_param)
-        if resolved:
-            tonic, mode = resolved
-            spec["music"] = {"key": f"{tonic} {mode}"}
-        else:
-            spec["music"] = None
+        spec["music"] = {"key": f"{resolved[0]} {resolved[1]}"} if resolved else None
+
+        # Melody block
+        spec["melodic"] = bool(wants_melody)
+        if wants_melody:
+            # ensure an oscillator exists for tonal notes
+            if spec.get("osc") is None:
+                spec["osc"] = "sine"
+            # install melody parameters
+            pattern = "arched"
+            if any(k in t for k in ["arpeggio", "arpeggios"]): pattern = "leaps"
+            if any(k in t for k in ["stepwise", "steps"]): pattern = "steps"
+            spec["melody"] = {
+                "bpm": float(bpm),
+                "beats_per_note": float(rhythm_beats),
+                "pattern": pattern,
+                "octaves": 2
+            }
+            # neutralize sweep to avoid fighting melody
+            spec["pitch"]["sweep"] = None
 
         return spec
 
@@ -738,55 +783,119 @@ class DescribedSFXTool(Tool):
 
     # ---------- rendering ----------
 
-    def _render_chain(self, spec: Dict[str, Any], duration: float, sr: int) -> tuple[np.ndarray, Dict[str, Any]]:
+    def _render_chain(self, spec: Dict[str, Any], duration: float, sr: int, description: str) -> tuple[np.ndarray, Dict[str, Any]]:
         n = int(round(duration * sr))
         t = np.arange(n, dtype=np.float32) / float(sr)
 
-        # determine oscillator + pitch path (with optional key quantization)
-        start_hz = float(spec["pitch"]["start"])
-        end_hz = None
-        if spec["pitch"].get("sweep"):
-            direction, semis = spec["pitch"]["sweep"]
-            ratio = 2 ** (abs(semis) / 12.0)
-            end_hz = start_hz * (ratio if direction == "up" else 1.0/ratio)
+        # detect if melodic rendering is requested
+        melodic = bool(spec.get("melodic"))
+        music_meta = {"key": None, "start_note": None, "end_note": None, "quantized": False, "melodic": melodic}
 
-        music_meta = {"key": None, "start_note": None, "end_note": None, "quantized": False}
+        # determine oscillator + pitch
+        start_hz = float(spec["pitch"]["start"])
+
+        # Key handling
+        tonic = mode = None
         if spec.get("music"):
-            tonic_mode = spec["music"]["key"]
             try:
-                tonic, mode = tonic_mode.split()
+                tonic, mode = spec["music"]["key"].split()
+                music_meta["key"] = f"{tonic} {mode}"
+            except Exception:
+                tonic = mode = None
+
+        # Build frequency trajectory
+        if melodic:
+            # Build a stepwise *melody* from key, tempo, rhythm, and a phrase pattern
+            bpm = float(spec["melody"]["bpm"]) if spec.get("melody") else _parse_bpm(description, 100.0)
+            bpn = float(spec["melody"]["beats_per_note"]) if spec.get("melody") else _parse_rhythm(description)
+            pattern_name = spec["melody"]["pattern"] if spec.get("melody") else "arched"
+            pattern = _phrase_pattern(pattern_name)
+
+            # choose a scale palette
+            # default to C major if no key
+            if not (tonic and mode):
+                tonic, mode = "C", "major"
+                music_meta["key"] = "C major (default)"
+
+            tonic_semi = _NOTE_TO_SEMI[tonic]
+            degrees = _scale_intervals(mode)  # e.g., [0,2,4,5,7,9,11]
+            # center around 5th octave root
+            base_midi_center = 12*5 + tonic_semi
+            # build 2-octave palette around center
+            palette = [base_midi_center + d for d in degrees] + [base_midi_center + 12 + d for d in degrees]
+
+            total_beats = duration * (bpm/60.0)
+            beats = 0.0
+            idx = 0
+            inst_freq = np.empty(n, dtype=np.float32)
+            inst_freq[:] = _midi_to_hz(base_midi_center)  # fallback
+
+            while beats < total_beats - 1e-6:
+                deg_off = pattern[idx % len(pattern)]
+                center_index = len(degrees)  # around second-octave root
+                scale_index = max(0, min(len(palette)-1, center_index + deg_off))
+                midi = palette[scale_index]
+                note_hz = _midi_to_hz(midi)
+
+                start_s = beats * 60.0 / bpm
+                dur_s = max(0.05, bpn * 60.0 / bpm)
+                n0 = int(round(start_s * sr))
+                n1 = min(n, n0 + int(round(dur_s * sr)))
+                if n0 >= n: break
+                inst_freq[n0:n1] = note_hz
+
+                if music_meta["start_note"] is None:
+                    music_meta["start_note"] = _note_name_from_midi(midi)
+                music_meta["end_note"] = _note_name_from_midi(midi)
+
+                beats += bpn
+                idx += 1
+
+            # fill any trailing samples
+            if n1 < n:
+                inst_freq[n1:] = inst_freq[n1-1]
+
+            # render oscillator with per-sample frequency
+            phase = 2 * np.pi * np.cumsum(inst_freq) / float(sr)
+        else:
+            # classic SFX path: continuous tone (possibly sweeping),
+            # with optional key-quantized endpoints
+            end_hz = None
+            if spec["pitch"].get("sweep"):
+                direction, semis = spec["pitch"]["sweep"]
+                ratio = 2 ** (abs(semis) / 12.0)
+                end_hz = start_hz * (ratio if direction == "up" else 1.0/ratio)
+
+            if tonic and mode:
                 q_start, start_name = _quantize_hz_to_key(start_hz, tonic, mode)
                 start_hz = q_start
-                music_meta.update({"key": tonic_mode, "start_note": start_name, "quantized": True})
+                music_meta.update({"start_note": start_name, "quantized": True})
                 if end_hz is not None:
                     q_end, end_name = _quantize_hz_to_key(end_hz, tonic, mode)
                     end_hz = q_end
                     music_meta["end_note"] = end_name
-            except Exception:
-                # if parsing fails, just proceed without quantization
-                pass
 
-        # frequency trajectory
-        if end_hz is not None:
-            g = np.linspace(0.0, 1.0, n, dtype=np.float32)
-            inst_freq = start_hz * (end_hz / start_hz) ** g
-        else:
-            inst_freq = np.full(n, start_hz, dtype=np.float32)
+            if end_hz is not None:
+                g = np.linspace(0.0, 1.0, n, dtype=np.float32)
+                inst_freq = start_hz * (end_hz / start_hz) ** g
+            else:
+                inst_freq = np.full(n, start_hz, dtype=np.float32)
+
+            phase = 2 * np.pi * np.cumsum(inst_freq) / float(sr)
 
         # source
         x = np.zeros(n, dtype=np.float32)
         if spec.get("noise"):
-            mode = spec["noise"]
-            if mode == "white":
+            mode_noise = spec["noise"]
+            if mode_noise == "white":
                 x += np.random.uniform(-1, 1, size=n).astype(np.float32)
-            elif mode == "pink":
+            elif mode_noise == "pink":
                 b = np.random.uniform(-1, 1, size=(16, n)).astype(np.float32)
                 x += (b.cumsum(axis=1)[-1] / np.arange(1, n+1)).astype(np.float32)
                 x /= np.max(np.abs(x) + 1e-6)
 
         if spec.get("osc"):
             wave = spec["osc"]
-            phase = 2 * np.pi * np.cumsum(inst_freq) / float(sr)
             if wave == "sine":
                 x += np.sin(phase)
             elif wave == "square":
@@ -811,9 +920,32 @@ class DescribedSFXTool(Tool):
                 hi = self._one_pole_hp_sweep(x, np.maximum(sweep/3, 40), sr)
                 x = lo - hi
 
-        # ADSR
+        # ADSR (global)
         e = spec["env"]
         env = self._adsr(n, sr, e["attack"], e["decay"], e["sustain"], e["release"])
+
+        # If melodic, add a per-note gating to articulate notes clearly
+        if melodic:
+            bpm = float(spec["melody"]["bpm"])
+            bpn = float(spec["melody"]["beats_per_note"])
+            note_len_s = bpn * 60.0 / bpm
+            gate = np.zeros(n, dtype=np.float32)
+            t_note = 0.0
+            while t_note < duration - 1e-6:
+                n0 = int(round(t_note * sr))
+                n1 = min(n, n0 + int(round(note_len_s * sr)))
+                if n0 >= n: break
+                a = max(1, int(0.01 * sr))  # 10ms attack
+                r = max(1, int(0.04 * sr))  # 40ms release
+                seg = np.ones(max(1, n1 - n0), dtype=np.float32)
+                a = min(a, seg.shape[0]//2)
+                r = min(r, seg.shape[0]//2)
+                if a > 0: seg[:a] = np.linspace(0, 1, a, dtype=np.float32)
+                if r > 0: seg[-r:] = np.linspace(1, 0, r, dtype=np.float32)
+                gate[n0:n1] = np.maximum(gate[n0:n1], seg)
+                t_note += note_len_s
+            env = env * gate
+
         x *= env
 
         # modulation

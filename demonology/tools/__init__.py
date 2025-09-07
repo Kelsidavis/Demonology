@@ -1,4 +1,3 @@
-# demonology/tools/__init__.py (robust, with free web search extras)
 from __future__ import annotations
 
 import logging
@@ -45,6 +44,7 @@ def remind_agent_capabilities() -> str:
         "- Media: image generation/analysis\n"
         "- Audio: synthesis, analysis, described SFX (key-aware)\n"
         "- Music: sheet OMR → MusicXML/MIDI/WAV (Audiveris/music21)\n"
+        "- 3D: model generator/export (OBJ/STL/GLB/PLY via trimesh)\n"
         "- Reverse engineering: objdump/r2/gdb/ghidra (if available)\n"
         "Use ToolRegistry.call(name, **kwargs)."
     )
@@ -118,6 +118,11 @@ def create_default_registry() -> ToolRegistry:
     mod, _ = _optional_import("sheet_music", ["SheetMusicOMRTool"])
     if mod and hasattr(mod, "SheetMusicOMRTool"):
         _try_register(reg, getattr(mod, "SheetMusicOMRTool"), report)
+
+    # 3D Model Generator
+    mod, _ = _optional_import("model3d_generator", ["Model3DGeneratorTool"])
+    if mod and hasattr(mod, "Model3DGeneratorTool"):
+        _try_register(reg, getattr(mod, "Model3DGeneratorTool"), report)
 
     reg._load_report = report  # type: ignore[attr-defined]
     return reg
