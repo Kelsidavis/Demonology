@@ -216,15 +216,20 @@ class WoWArchiveOrchestratorTool(Tool):
         if create_unreal_project and WoWToUnrealTool is not None:
             unreal_tool = WoWToUnrealTool()
             unreal_res = await unreal_tool.execute(
-                wow_path=str(extract_root),
-                project_path=str(ws / unreal_project_name),
-                project_name=unreal_project_name,
+                operation="create_project",
+                wow_data_path=str(extract_root),
+                unreal_project_path=str(ws / unreal_project_name),
+                asset_types=["all"] if export_models else ["terrain"],
                 conversion_settings={
-                    "import_models": export_models,
-                    "import_textures": True,
-                    "import_terrain": export_terrain,
+                    "model_format": "fbx",
+                    "texture_format": "png",
                     "create_materials": True,
-                    "create_blueprints": True
+                    "optimize_meshes": True
+                },
+                unreal_settings={
+                    "project_name": unreal_project_name,
+                    "generate_blueprints": True,
+                    "create_game_mode": True
                 }
             )
             if unreal_res.get("success"):

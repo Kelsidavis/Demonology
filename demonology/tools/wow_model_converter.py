@@ -322,17 +322,16 @@ class WoWModelConverterTool(Tool):
             out_path = Path(output_path).resolve()
             if not in_path.exists():
                 return {"success": False, "error": f"Input path not found: {input_path}"}
-            if not out_path.suffix.lower() in (".obj", ".glb", ".gltf"):
-                # If input is a directory, allow output_path to be a directory too
-                if in_path.is_dir():
-                    # when exporting a folder, output_path may be a directory path (with or without existing suffix)
-                    if out_path.exists() and out_path.is_file():
-                        return {"success": False, "error": "When input_path is a directory, output_path must be a directory."}
-                    # treat as directory batch export
-                else:
+            # Validate output path based on input type
+            if in_path.is_dir():
+                # Directory input: output should be a directory
+                if out_path.exists() and out_path.is_file():
+                    return {"success": False, "error": "When input_path is a directory, output_path must be a directory."}
+                # Continue with batch processing
+            else:
+                # Single file input: output must have proper extension
+                if not out_path.suffix.lower() in (".obj", ".glb", ".gltf"):
                     return {"success": False, "error": "output_path must end with .obj, .glb or .gltf"}
-
-                return {"success": False, "error": "output_path must end with .obj, .glb or .gltf"}
 
             if kind == "auto":
                 kind = self._infer_kind(in_path)
