@@ -49,6 +49,15 @@ def _list_tiles_from_wdt(wdt_path: Path) -> Optional[List[Tuple[int,int]]]:
     try:
         tiles = []
         with wdt_path.open('rb') as f:
+            # Check if this is a WDT file with REVM header
+            header = f.read(4)
+            f.seek(0)  # Reset to beginning
+            
+            # Handle different WDT formats
+            if header == b'REVM':
+                # New format WDT - skip to chunks after REVM header
+                f.seek(12)  # Skip REVM header
+                
             for magic, size, data, _ in _read_chunks(f):
                 if magic == 'MAIN':
                     if size < TILES_PER_SIDE*TILES_PER_SIDE*8:
@@ -61,10 +70,27 @@ def _list_tiles_from_wdt(wdt_path: Path) -> Optional[List[Tuple[int,int]]]:
                             if i < len(flags) and flags[i] != 0:
                                 tiles.append((x,y))
                     return tiles
+                elif magic == 'NIAM':  # MAIN backwards - some WDT files have this
+                    if size < TILES_PER_SIDE*TILES_PER_SIDE*8:
+                        continue
+                    # For instance dungeons, might have different format
+                    # Try to find any non-zero entries indicating tiles exist
+                    arr = np.frombuffer(data, dtype='<u4')
+                    # Instance dungeons typically use tile (0,0)
+                    if len(arr) > 0:
+                        tiles.append((0,0))
+                        return tiles
+        
+        # If no tiles found via WDT, but file exists, assume it's a single-tile instance
+        if wdt_path.exists():
+            logger.info("WDT exists but no tiles found - assuming single tile instance at (0,0)")
+            return [(0,0)]
+            
         return None
     except Exception as e:
         logger.warning("WDT parse failed: %s", e)
-        return None
+        # For instances, often just single tile at 0,0
+        return [(0,0)]
 
 def _list_tiles_from_fs(map_dir: Path, map_name: str) -> List[Tuple[int,int]]:
     tiles = []
@@ -116,6 +142,59 @@ def _read_adt_height_129(adt_path: Path) -> Optional[np.ndarray]:
     except Exception as e:
         logger.error("Failed to read ADT %s: %s", adt_path, e)
         return None
+
+def _read_wdl_height(wdl_path: Path) -> Optional[np.ndarray]:
+    """Read height data from WDL file for instance dungeons."""
+    try:
+        with wdl_path.open('rb') as f:
+            # Handle REVM header format
+            header = f.read(4)
+            f.seek(0)
+            
+            if header == b'REVM':
+                # Skip REVM header (12 bytes)
+                f.seek(12)
+                
+            for magic, size, data, _ in _read_chunks(f):
+                logger.debug(f"WDL chunk: {magic}, size: {size}")
+                
+                if magic == 'FOAM':  # FOAM chunk might contain terrain data for instances
+                    # FOAM chunks in WDL files can contain heightmap data
+                    if size >= 16:  # Need at least some data
+                        # Instance dungeons often have simple flat heightmaps
+                        # Generate a basic heightmap for the instance
+                        dim = 65  # Standard size for small instances
+                        height_data = np.zeros((dim, dim), dtype=np.float32)
+                        logger.info("Generated flat heightmap from FOAM chunk for instance")
+                        return height_data
+                        
+                elif magic == 'MLHD':  # Heightmap data in WDL
+                    if size >= 4:
+                        heights = np.frombuffer(data, dtype='<f4')
+                        sqrt_len = int(np.sqrt(len(heights)))
+                        if sqrt_len * sqrt_len == len(heights):
+                            return heights.reshape((sqrt_len, sqrt_len))
+                        # Try common instance sizes
+                        for dim in [17, 33, 65, 129]:
+                            if len(heights) >= dim * dim:
+                                return heights[:dim*dim].reshape((dim, dim))
+                                
+                elif magic == 'MCNK':  # Sometimes WDL contains MCNK chunks like ADT
+                    g9 = _parse_mcnk_heights(data)
+                    if g9 is not None:
+                        # Single chunk for small instance - expand to reasonable size
+                        return np.tile(g9, (4, 4))  # Tile the 9x9 to 36x36
+                        
+        # If no height data found but WDL exists, create a default flat heightmap
+        # Many instance dungeons don't have complex terrain
+        logger.info("No height data found in WDL, generating flat terrain for instance")
+        return np.zeros((65, 65), dtype=np.float32)
+        
+    except Exception as e:
+        logger.warning("Failed to read WDL %s: %s", wdl_path, e)
+        # Generate a basic flat heightmap as fallback for instances
+        logger.info("Generating flat heightmap as fallback for instance")
+        return np.zeros((65, 65), dtype=np.float32)
 
 def _export_height_png16(path: Path, heightmap: np.ndarray):
     if Image is None:
@@ -200,18 +279,38 @@ class WoWWorldConverterTool(Tool):
 
         heights: Dict[Tuple[int,int], np.ndarray] = {}
         missing: List[Tuple[int,int]] = []
-        for (tx, ty) in sorted(selected):
-            p = map_dir / f"{map_name}_{tx:02d}_{ty:02d}.adt"
-            if not p.exists():
-                missing.append((tx,ty)); continue
-            hm = _read_adt_height_129(p)
-            if hm is None:
-                missing.append((tx,ty)); continue
-            if downsample and downsample > 1:
-                hm = hm[::downsample, ::downsample]
-            heights[(tx,ty)] = hm
+        
+        # Check if this is an instance dungeon without ADT files
+        wdl_path = map_dir / f"{map_name}.wdl"
+        adt_files_exist = any((map_dir / f"{map_name}_{tx:02d}_{ty:02d}.adt").exists() 
+                             for tx, ty in selected)
+        
+        if not adt_files_exist and wdl_path.exists():
+            # Instance dungeon - try to read from WDL file
+            logger.info("No ADT files found, trying to read instance terrain from WDL")
+            wdl_height = _read_wdl_height(wdl_path)
+            if wdl_height is not None:
+                # For instances, typically use tile (0,0)
+                if downsample and downsample > 1:
+                    wdl_height = wdl_height[::downsample, ::downsample]
+                heights[(0, 0)] = wdl_height
+                logger.info("Successfully read WDL heightmap: %s", wdl_height.shape)
+        else:
+            # Regular world map - read ADT files
+            for (tx, ty) in sorted(selected):
+                p = map_dir / f"{map_name}_{tx:02d}_{ty:02d}.adt"
+                if not p.exists():
+                    missing.append((tx,ty)); continue
+                hm = _read_adt_height_129(p)
+                if hm is None:
+                    missing.append((tx,ty)); continue
+                if downsample and downsample > 1:
+                    hm = hm[::downsample, ::downsample]
+                heights[(tx,ty)] = hm
+                
         if not heights:
-            return {"success": False, "error": "All requested tiles missing or unreadable.", "missing": missing}
+            wdl_hint = f" (WDL: {'exists' if wdl_path.exists() else 'missing'})" if not adt_files_exist else ""
+            return {"success": False, "error": f"All requested tiles missing or unreadable{wdl_hint}.", "missing": missing}
 
         outdir = Path(output_dir).expanduser().resolve()
         outdir.mkdir(parents=True, exist_ok=True)

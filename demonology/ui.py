@@ -476,12 +476,13 @@ class DemonologyUI:
             import logging
             logger = logging.getLogger(__name__)
             logger.error(f"Input error: {e}")
-            # Attempt cleanup in case of threading issues
+            # Attempt graceful cleanup without forcing daemon thread joins
             try:
                 import threading
-                # Give any background threads time to cleanup
+                # Only wait for non-daemon threads to cleanup naturally
                 for thread in threading.enumerate():
-                    if thread != threading.current_thread() and thread.daemon:
+                    if (thread != threading.current_thread() and 
+                        not thread.daemon and thread.is_alive()):
                         thread.join(timeout=0.1)
             except:
                 pass

@@ -26,6 +26,7 @@ from .config import Config
 from .ui import DemonologyUI
 from .themes import ThemeName
 from .tools import ToolRegistry, create_default_registry
+import shutil
 
 # ---- injected safety helpers ----
 def _json_loads_tolerant(s: str):
@@ -206,6 +207,14 @@ class DemonologyApp:
         
         # Log startup info
         logger.info(f"Demonology CLI started - Log files: {MAIN_LOG_PATH} (main), {ERROR_LOG_PATH} (errors)")
+
+    def _resolve_mpq_candidate(self, name: str) -> str:
+        """Try bare name, then 'uploads/<name>' inside workspace."""
+        p = Path(name)
+        if p.exists():
+            return str(p)
+        alt = Path("uploads") / name
+        return str(alt) if alt.exists() else name
 
     def _log_structured_error(self, error_type: str, error_message: str, context: Dict[str, Any] = None):
         """Log structured error information for autonomous debugging."""
@@ -504,6 +513,15 @@ class DemonologyApp:
     def process_command(self, user_input: str) -> bool:
         """Return False to quit."""
         if not user_input.startswith('/'):
+            return True
+
+        # Don't treat file paths as slash commands
+        # Check if this looks like a file path rather than a command
+        if (len(user_input) > 1 and 
+            (user_input.count('/') > 1 or  # Multiple slashes = likely a path
+             any(char in user_input for char in ['.', ' ']) or  # Contains . or space = likely not a command
+             len(user_input.split('/')) > 2)):  # Deep path structure
+            # This looks like a file path or complex input, not a slash command
             return True
 
         command = user_input[1:].strip().lower()
@@ -997,6 +1015,47 @@ Config file: {cfg.config_path}
         
         return processed_text
     
+    def _clean_user_input(self, text: str) -> str:
+        """Clean and validate user input, fixing common path and formatting issues."""
+        if not text:
+            return text
+        
+        # Remove extra whitespace and normalize
+        cleaned = text.strip()
+        
+        # Fix common path duplication issues (e.g., "path/path" -> "path")
+        # This handles cases where paths get duplicated during copy/paste
+        words = cleaned.split()
+        deduplicated_words = []
+        
+        for word in words:
+            # Check for duplicated path segments
+            if '/' in word:
+                parts = word.split('/')
+                # Remove consecutive duplicate segments
+                clean_parts = []
+                for part in parts:
+                    if not clean_parts or clean_parts[-1] != part:
+                        clean_parts.append(part)
+                deduplicated_words.append('/'.join(clean_parts))
+            else:
+                deduplicated_words.append(word)
+        
+        cleaned = ' '.join(deduplicated_words)
+        
+        # Fix malformed quotes
+        if cleaned.count('"') % 2 == 1:
+            # Odd number of quotes - likely missing closing quote
+            if not cleaned.endswith('"'):
+                cleaned += '"'
+        
+        if cleaned.count("'") % 2 == 1:
+            # Odd number of single quotes
+            if not cleaned.endswith("'"):
+                cleaned += "'"
+        
+        return cleaned
+    
     def _show_logs(self):
         """Display log file locations for debugging."""
         self.ui.display_info(f"📋 Log Files for Error Review:")
@@ -1261,7 +1320,17 @@ Config file: {cfg.config_path}
                 logger.debug(f"JSON parse failed for {function_name}, using fallback")
                 # Try to extract key parameters manually as fallback
                 arguments = self._extract_fallback_arguments(function_name, arguments_str)
-            
+
+            # Heuristic: normalize MPQ inputs when the model under-specifies them
+            if function_name == "mpq_extractor":
+                mpqs = arguments.get("mpq_paths") or []
+                if isinstance(mpqs, list) and mpqs:
+                    arguments["mpq_paths"] = [self._resolve_mpq_candidate(x) for x in mpqs]
+                # default sane behavior
+                arguments.setdefault("operation", "extract_all")
+                arguments.setdefault("dest_dir", "extracted")
+                arguments.setdefault("overwrite", True)
+
             self.ui.console.print(f"[bold magenta]🔥 Binding demon [{function_name}] with dark ritual: {arguments} 🔥[/bold magenta]")
             await self.ui.start_loading(f"Invoking daemon of {function_name}... blood sacrifice accepted...")
             result = await self.tool_registry.execute_tool(function_name, **arguments)
@@ -1270,7 +1339,26 @@ Config file: {cfg.config_path}
             if result.get("success", False):
                 self.ui.console.print(f"[bold green]👹 DEMON [{function_name}] BOWS TO YOUR WILL - POWER CHANNELED 👹[/bold green]")
             else:
-                self.ui.console.print(f"[bold red]💀 DEMON [{function_name}] DEFIES THE SUMMONING - CURSE BACKFIRED: {result.get('error', 'Ancient evil')} 💀[/bold red]")
+                err = (result.get("error") or "Ancient evil")
+                # If MPQ failed due to backend, try a gentle auto-retry using the other backend
+                if function_name == "mpq_extractor" and "backend" in (result or {}):
+                    pass
+                elif function_name == "mpq_extractor" and ("No MPQ backend available" in err or "command not found" in err or "not available" in err):
+                    # If the first try didn't specify, force the other backend once
+                    prev = arguments.get("backend", "auto")
+                    fallback = "python" if shutil.which("mpq") is None else "cli"
+                    if prev != fallback:
+                        arguments["backend"] = fallback
+                        self.ui.console.print("[yellow]Attempting automatic backend fallback...[/yellow]")
+                        await self.ui.start_loading("Falling back to alternate MPQ backend")
+                        result = await self.tool_registry.execute_tool(function_name, **arguments)
+                        await self.ui.stop_loading()
+                        if result.get("success", False):
+                            self.ui.console.print("[green]Fallback succeeded.[/green]")
+                        else:
+                            err = (result.get("error") or err)
+                if not result.get("success", False):
+                    self.ui.console.print(f"[bold red]💀 DEMON [{function_name}] DEFIES THE SUMMONING - CURSE BACKFIRED: {err} 💀[/bold red]")
             
             # Add tool result to history
             tool_result_message = {
@@ -1715,11 +1803,30 @@ Config file: {cfg.config_path}
 
         while self.running:
             try:
-                # Get initial user input
-                user_input = self.ui.get_user_input()
+                # Get initial user input with error recovery
+                try:
+                    user_input = self.ui.get_user_input()
+                except Exception as e:
+                    logger.error(f"Input error: {e}")
+                    self.ui.display_error(f"Input error: {str(e)}")
+                    continue
                 
+                if not user_input:
+                    continue
+                    
                 # Ensure escape sequences are processed (backup processing)
-                user_input = self._process_escape_sequences(user_input)
+                try:
+                    user_input = self._process_escape_sequences(user_input)
+                except Exception as e:
+                    logger.warning(f"Escape sequence processing failed: {e}")
+                    # Continue with unprocessed input
+                
+                # Clean up common path issues
+                try:
+                    user_input = self._clean_user_input(user_input)
+                except Exception as e:
+                    logger.warning(f"Input cleanup failed: {e}")
+                    # Continue with uncleaned input
 
                 # Handle timeout-based auto-continue
                 auto_continued = False
