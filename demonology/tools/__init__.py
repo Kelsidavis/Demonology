@@ -166,6 +166,27 @@ def create_default_registry() -> ToolRegistry:
     if mod and hasattr(mod, "WoWAutoSceneTool"):
         _try_register(reg, getattr(mod, "WoWAutoSceneTool"), report)
 
+    # Unreal Engine Toolset
+    mod, _ = _optional_import("unreal_project", ["UnrealProjectTool"])
+    if mod and hasattr(mod, "UnrealProjectTool"):
+        _try_register(reg, getattr(mod, "UnrealProjectTool"), report)
+
+    mod, _ = _optional_import("unreal_blueprint", ["UnrealBlueprintTool"])
+    if mod and hasattr(mod, "UnrealBlueprintTool"):
+        _try_register(reg, getattr(mod, "UnrealBlueprintTool"), report)
+
+    mod, _ = _optional_import("unreal_asset", ["UnrealAssetTool"])
+    if mod and hasattr(mod, "UnrealAssetTool"):
+        _try_register(reg, getattr(mod, "UnrealAssetTool"), report)
+
+    mod, _ = _optional_import("unreal_gameplay", ["UnrealGameplayTool"])
+    if mod and hasattr(mod, "UnrealGameplayTool"):
+        _try_register(reg, getattr(mod, "UnrealGameplayTool"), report)
+
+    mod, _ = _optional_import("unreal_build", ["UnrealBuildTool"])
+    if mod and hasattr(mod, "UnrealBuildTool"):
+        _try_register(reg, getattr(mod, "UnrealBuildTool"), report)
+
     reg._load_report = report  # type: ignore[attr-defined]
     return reg
 
