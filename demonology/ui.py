@@ -471,6 +471,21 @@ class DemonologyUI:
             
         except (KeyboardInterrupt, EOFError):
             return "/quit"
+        except Exception as e:
+            # Handle any other exception gracefully to prevent GIL issues
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Input error: {e}")
+            # Attempt cleanup in case of threading issues
+            try:
+                import threading
+                # Give any background threads time to cleanup
+                for thread in threading.enumerate():
+                    if thread != threading.current_thread() and thread.daemon:
+                        thread.join(timeout=0.1)
+            except:
+                pass
+            return "/quit"
     
     def _show_history_menu(self) -> str:
         """Show history menu and let user select a command."""

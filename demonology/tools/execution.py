@@ -30,8 +30,8 @@ def _limit_resources():
         resource.setrlimit(resource.RLIMIT_AS, (as_bytes, as_bytes))
         # Open files (increased for Java applications like Ghidra)
         resource.setrlimit(resource.RLIMIT_NOFILE, (2048, 2048))
-        # Max processes/threads (increased for multithreaded applications)
-        resource.setrlimit(resource.RLIMIT_NPROC, (512, 512))
+        # Max processes/threads (conservative limit to prevent resource exhaustion)
+        resource.setrlimit(resource.RLIMIT_NPROC, (64, 64))
         # Disable core dumps
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     except Exception:
