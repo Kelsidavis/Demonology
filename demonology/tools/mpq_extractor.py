@@ -1,64 +1,34 @@
-
+# demonology/tools/mpq_extractor.py
 from __future__ import annotations
 
 import asyncio
-import logging
+import json
 import os
-import re
 import shutil
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
 
+from .base import Tool, _confine, _ok_path
+
+# Optional Python backends (best-effort imports; tool still works without them)
 try:
-    from .base import Tool  # type: ignore
+    import pylibmpq  # type: ignore
 except Exception:
-    class Tool:
-        def __init__(self, name: str, description: str):
-            self.name, self.description = name, description
-
-logger = logging.getLogger(__name__)
-
-# Optional python backend(s)
-_BACKENDS = {}
-
-try:
-    import pympq  # type: ignore
-    _BACKENDS['pympq'] = 'pympq'
-except Exception:
-    pass
-
-def _which(*names: str) -> Optional[str]:
-    for n in names:
-        p = shutil.which(n)
-        if p:
-            return p
-    return None
-
-def _has_cli() -> Optional[str]:
-    # Common CLIs from mpq-tools packages
-    return _which("mpq")
-
-async def _run(cmd: List[str]) -> Tuple[int, str, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    out, err = await proc.communicate()
-    return proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+    pylibmpq = None  # type: ignore
 
 class MPQExtractorTool(Tool):
     """
-    Work with Blizzard MPQ archives:
-    - List files inside (.list)
-    - Extract all contents (or best-effort patterns via CLI)
-
-    Backends:
-      * Python: pympq (if installed)
-      * CLI: 'mpq' from mpq-tools (if found in PATH)
+    Safe MPQ listing/extraction with multiple backends:
+      1) Python backend via pylibmpq (if installed)
+      2) External CLI 'mpq' (if allowed & present)
     """
 
     def __init__(self):
-        super().__init__("mpq_extractor", "List and extract Blizzard MPQ archives (pympq/CLI).")
+        super().__init__("mpq_extractor", "List/extract World of Warcraft MPQ archives.")
+
+    def is_available(self) -> bool:
+        """Check if MPQ extraction backends are available."""
+        return self._backend_can_python() or self._backend_can_cli()
 
     def to_openai_function(self) -> Dict[str, Any]:
         return {
@@ -70,125 +40,343 @@ class MPQExtractorTool(Tool):
                     "mpq_paths": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "List of .mpq paths (or a directory containing them)"
+                        "description": "List of .MPQ files or a directory containing them"
                     },
                     "operation": {
                         "type": "string",
                         "enum": ["list", "extract_all"],
-                        "default": "list",
-                        "description": "List archive contents or extract all files"
+                        "default": "list"
                     },
                     "dest_dir": {
                         "type": "string",
-                        "description": "Destination directory for extraction (required for extract_all)"
+                        "description": "Destination directory for extraction (extract_all only)",
+                        "default": "extracted"
                     },
                     "overwrite": {
                         "type": "boolean",
-                        "default": True,
-                        "description": "Overwrite existing files on extraction"
+                        "default": False
+                    },
+                    "backend": {
+                        "type": "string",
+                        "enum": ["auto", "python", "cli"],
+                        "default": "auto"
+                    },
+                    "parallel": {
+                        "type": "boolean",
+                        "description": "Extract multiple MPQ files in parallel (CLI backend only)",
+                        "default": False
+                    },
+                    "quiet": {
+                        "type": "boolean",
+                        "description": "Reduce output verbosity for faster extraction",
+                        "default": True
                     }
                 },
                 "required": ["mpq_paths"]
             }
         }
 
-    def is_available(self) -> bool:
-        return bool(_BACKENDS) or bool(_has_cli())
+    def _discover_inputs(self, mpq_paths: List[str]) -> List[Path]:
+        found: List[Path] = []
+        for raw in mpq_paths:
+            p = _confine(Path(raw))
+            if p.is_dir():
+                found.extend([x for x in p.glob("**/*.MPQ") if x.is_file()])
+                found.extend([x for x in p.glob("**/*.mpq") if x.is_file()])
+            elif p.is_file() and p.suffix.lower() == ".mpq":
+                found.append(p)
+        return found
 
-    async def execute(self,
-                      mpq_paths: List[str],
-                      operation: str = "list",
-                      dest_dir: Optional[str] = None,
-                      overwrite: bool = True,
-                      **_) -> Dict[str, Any]:
-        archives = self._collect_archives(mpq_paths)
-        if not archives:
+    def _backend_can_python(self) -> bool:
+        return pylibmpq is not None
+
+    def _backend_can_cli(self) -> bool:
+        # Respect security whitelist (handled by base; here we only detect)
+        return shutil.which("mpq") is not None
+
+    async def _list_python(self, path: Path) -> List[str]:
+        # pylibmpq doesn’t standardize a directory listing across all forks;
+        # some builds expose .files / iter-like. We try common patterns.
+        # If unavailable, we gracefully degrade to CLI.
+        try:
+            archive = pylibmpq.Archive(str(path))  # type: ignore
+        except Exception as e:
+            raise RuntimeError(f"pylibmpq open failed ({e})")
+
+        names: List[str] = []
+        # Try best-known attributes
+        for attr in ("files", "namelist", "filelist"):
+            files = getattr(archive, attr, None)
+            if files:
+                try:
+                    for f in files:
+                        name = f if isinstance(f, str) else getattr(f, "filename", None)
+                        if name:
+                            names.append(name)
+                    return sorted(set(names))
+                except Exception:
+                    pass
+
+        # Fallback: try numeric iteration (some forks expose __len__ and __getitem__)
+        try:
+            count = len(archive)  # type: ignore
+            for i in range(count):
+                try:
+                    names.append(archive[i].filename)  # type: ignore
+                except Exception:
+                    pass
+            return sorted(set([n for n in names if n]))
+        except Exception:
+            raise RuntimeError("pylibmpq cannot enumerate files on this build")
+
+    async def _extract_all_python(self, path: Path, dest_dir: Path, overwrite: bool) -> Dict[str, Any]:
+        # Minimal, defensive extractor; not all pylibmpq forks expose unified API.
+        archive = pylibmpq.Archive(str(path))  # type: ignore
+        extracted = 0
+        errors: List[str] = []
+
+        # Try to obtain names via the same helper
+        try:
+            names = await self._list_python(path)
+        except Exception as e:
+            return {"success": False, "error": f"Python backend listing failed: {e}"}
+
+        for name in names:
+            try:
+                # create output path
+                out_path = _confine(dest_dir / name)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                if out_path.exists() and not overwrite:
+                    continue
+
+                # read bytes (APIs vary: some provide read_file / extractfile / getmember)
+                data = None
+                for cand in ("read_file", "extractfile", "open", "getmember"):
+                    fn = getattr(archive, cand, None)
+                    if fn:
+                        try:
+                            obj = fn(name)
+                            if hasattr(obj, "read"):
+                                data = obj.read()
+                            elif isinstance(obj, (bytes, bytearray)):
+                                data = bytes(obj)
+                            else:
+                                # Maybe returns index; try archive[index].read()
+                                pass
+                            break
+                        except Exception:
+                            continue
+                if data is None:
+                    # Final hail mary: some forks expose archive[name]
+                    try:
+                        item = archive[name]  # type: ignore
+                        data = item.read() if hasattr(item, "read") else None
+                    except Exception:
+                        pass
+
+                if not data:
+                    errors.append(f"skip {name}: unreadable (backend limitation)")
+                    continue
+
+                with open(out_path, "wb") as f:
+                    f.write(data)
+                extracted += 1
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+
+        return {
+            "success": True,
+            "backend": "python",
+            "extracted": extracted,
+            "skipped": len(names) - extracted,
+            "errors": errors[:20],
+        }
+
+    async def _run_cli(self, args: List[str], quiet: bool = True) -> Dict[str, Any]:
+        # Use DEVNULL for stdout to reduce output processing overhead during extraction when quiet=True
+        use_devnull = quiet and any("extract" in arg for arg in args)
+        
+        proc = await asyncio.create_subprocess_exec(
+            *args, 
+            stdout=asyncio.subprocess.DEVNULL if use_devnull else asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        if not use_devnull:
+            stdout, stderr = await proc.communicate()
+            return {
+                "code": proc.returncode,
+                "stdout": stdout.decode("utf-8", "replace"),
+                "stderr": stderr.decode("utf-8", "replace"),
+            }
+        else:
+            # For quiet extract operations, only capture stderr
+            _, stderr = await proc.communicate()
+            return {
+                "code": proc.returncode,
+                "stdout": "",
+                "stderr": stderr.decode("utf-8", "replace"),
+            }
+
+    async def _list_cli(self, path: Path, quiet: bool = False) -> List[str]:
+        # The `mpq` CLI syntax: mpq list <archive>
+        cmd = ["mpq", "list", str(path)]
+        res = await self._run_cli(cmd, quiet=quiet)
+        if res["code"] == 0 and res["stdout"].strip():
+            lines = [ln.strip() for ln in res["stdout"].splitlines() if ln.strip()]
+            return lines
+        raise RuntimeError(f"CLI 'mpq list' failed; stderr: {res['stderr']}")
+
+    async def _extract_all_cli(self, path: Path, dest_dir: Path, overwrite: bool, quiet: bool = True) -> Dict[str, Any]:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        
+        # The `mpq` CLI syntax: mpq extract <archive> -o <output_dir> -k (keep folder structure)
+        cmd = ["mpq", "extract", str(path), "-o", str(dest_dir), "-k"]
+        
+        res = await self._run_cli(cmd, quiet=quiet)
+        if res["code"] == 0:
+            # Count extracted files by scanning the output directory instead of parsing stdout
+            try:
+                extracted_count = sum(1 for _ in dest_dir.rglob("*") if _.is_file() and not _.name.startswith("("))
+            except Exception:
+                extracted_count = "unknown"
+            
+            return {
+                "success": True, 
+                "backend": "cli", 
+                "extracted_files": extracted_count,
+                "stderr": res["stderr"][-500:] if res["stderr"] else ""
+            }
+        
+        return {"success": False, "error": f"CLI extraction failed: {res['stderr'] or 'Unknown error'}"}
+
+    async def execute(
+        self,
+        mpq_paths: List[str],
+        operation: str = "list",
+        dest_dir: str = "extracted",
+        overwrite: bool = False,
+        backend: str = "auto",
+        parallel: bool = False,
+        quiet: bool = True,
+        **_: Any
+    ) -> Dict[str, Any]:
+        # Resolve candidates
+        paths = self._discover_inputs(mpq_paths)
+        if not paths:
             return {"success": False, "error": "No MPQ files found in provided paths."}
 
-        py_backend = 'pympq' if 'pympq' in _BACKENDS else None
-        cli = _has_cli()
+        # Confinement & outputs
+        out_root = _confine(Path(dest_dir)) if dest_dir else _confine(Path("extracted"))
+        results: Dict[str, Any] = {"success": True, "items": []}
 
-        if operation == "list":
-            listing = {}
-            for arc in archives:
-                if py_backend:
-                    try:
-                        import pympq  # type: ignore
-                        with pympq.MPQArchive(str(arc)) as a:
-                            listing[str(arc)] = a.namelist()
+        # Pick backend with smart fallback
+        python_available = self._backend_can_python()
+        cli_available = self._backend_can_cli()
+        
+        if backend == "python":
+            if python_available:
+                use_python, use_cli = True, False
+            elif cli_available:
+                # Fall back to CLI when Python is explicitly requested but not available
+                use_python, use_cli = False, True
+            else:
+                use_python, use_cli = False, False
+        elif backend == "cli":
+            if cli_available:
+                use_python, use_cli = False, True
+            else:
+                use_python, use_cli = False, False
+        else:  # "auto"
+            use_python = python_available
+            use_cli = cli_available
+
+        if not (use_python or use_cli):
+            error_msg = "No MPQ backend available."
+            hints = []
+            if backend == "python":
+                error_msg = "Python MPQ backend (pylibmpq) not available."
+                hints.append("pip install pylibmpq  # if available for your platform")
+                if cli_available:
+                    hints.append("Consider using 'auto' or 'cli' backend instead")
+            elif backend == "cli":
+                error_msg = "CLI MPQ backend ('mpq' command) not available."
+                hints.append("Install a CLI like 'mpq' (StormLib-based) and ensure it's on PATH")
+                if python_available:
+                    hints.append("Consider using 'auto' or 'python' backend instead")
+            else:
+                hints = [
+                    "pip install pylibmpq  # if available for your platform",
+                    "OR install a CLI like 'mpq' (StormLib-based) and ensure it's on PATH",
+                ]
+            
+            return {
+                "success": False,
+                "error": error_msg,
+                "hints": hints,
+            }
+
+        # Handle parallel extraction for CLI backend
+        if operation == "extract_all" and parallel and use_cli and len(paths) > 1:
+            tasks = []
+            for p in paths:
+                # Create separate output directories for each MPQ when extracting in parallel
+                mpq_dest = out_root / p.stem
+                tasks.append(self._extract_all_cli(p, mpq_dest, overwrite, quiet))
+            
+            try:
+                parallel_results = await asyncio.gather(*tasks, return_exceptions=True)
+                for i, (p, result) in enumerate(zip(paths, parallel_results)):
+                    if isinstance(result, Exception):
+                        return {"success": False, "error": f"Parallel extraction failed for {p.name}: {result}"}
+                    elif not result.get("success"):
+                        return {"success": False, "error": f"Parallel extraction failed for {p.name}: {result.get('error')}"}
+                    results["items"].append({"path": str(p), **result})
+            except Exception as e:
+                return {"success": False, "error": f"Parallel extraction error: {e}"}
+        else:
+            # Sequential processing (original logic)
+            for p in paths:
+                if operation == "list":
+                    if use_python:
+                        try:
+                            names = await self._list_python(p)
+                            results["items"].append({"path": str(p), "files": names})
+                            continue
+                        except Exception:
+                            # fall through to CLI
+                            pass
+                    if use_cli:
+                        try:
+                            names = await self._list_cli(p, quiet)
+                            results["items"].append({"path": str(p), "files": names})
+                            continue
+                        except Exception as e:
+                            return {"success": False, "error": f"List failed for {p.name}: {e}"}
+                    return {"success": False, "error": "No working backend could list files."}
+
+                elif operation == "extract_all":
+                    if use_python:
+                        try:
+                            r = await self._extract_all_python(p, out_root, overwrite)
+                            if not r.get("success"):
+                                raise RuntimeError(r.get("error", "python backend failed"))
+                            results["items"].append({"path": str(p), **r})
+                            continue
+                        except Exception:
+                            pass  # fall back to CLI
+
+                    if use_cli:
+                        r = await self._extract_all_cli(p, out_root, overwrite, quiet)
+                        if not r.get("success"):
+                            return {"success": False, "error": r.get("error", "CLI failed")}
+                        results["items"].append({"path": str(p), **r})
                         continue
-                    except Exception as e:
-                        logger.debug("pympq list failed for %s: %s", arc, e, exc_info=True)
-                if cli:
-                    code, out, err = await _run([cli, "l", str(arc)])
-                    if code == 0:
-                        files = self._parse_cli_list(out)
-                        listing[str(arc)] = files
-                    else:
-                        listing[str(arc)] = {"error": err.strip() or out.strip()}
+
+                    return {"success": False, "error": "No working backend could extract files."}
                 else:
-                    listing[str(arc)] = {"error": "No backend available (install 'pympq' or 'mpq-tools')."}
-            return {"success": True, "archives": [str(x) for x in archives], "listing": listing}
+                    return {"success": False, "error": f"Unknown operation: {operation}"}
 
-        if operation == "extract_all":
-            if not dest_dir:
-                return {"success": False, "error": "dest_dir is required for extract_all"}
-            dest = Path(dest_dir).expanduser().resolve()
-            dest.mkdir(parents=True, exist_ok=True)
-            extracted = []
-            errors = []
-            for arc in archives:
-                if py_backend:
-                    try:
-                        import pympq  # type: ignore
-                        with pympq.MPQArchive(str(arc)) as a:
-                            for name in a.namelist():
-                                out_path = dest / name
-                                out_path.parent.mkdir(parents=True, exist_ok=True)
-                                if out_path.exists() and not overwrite:
-                                    continue
-                                with a.open(name) as src, open(out_path, "wb") as dst:
-                                    dst.write(src.read())
-                        extracted.append(str(arc))
-                        continue
-                    except Exception as e:
-                        logger.debug("pympq extract failed for %s: %s", arc, e, exc_info=True)
-                if cli:
-                    # mpq x <archive> -o <dest>
-                    code, out, err = await _run([cli, "x", str(arc), "-o", str(dest)])
-                    if code == 0:
-                        extracted.append(str(arc))
-                    else:
-                        errors.append({"archive": str(arc), "error": err.strip() or out.strip()})
-                else:
-                    errors.append({"archive": str(arc), "error": "No backend available (install 'pympq' or 'mpq-tools')."})
-            return {"success": len(extracted) > 0 and not errors, "extracted": extracted, "errors": errors}
+        results["output_dir"] = str(out_root)
+        return results
 
-        return {"success": False, "error": f"Unknown operation: {operation}"}
-
-    def _collect_archives(self, inputs: List[str]) -> List[Path]:
-        out: List[Path] = []
-        for p in inputs:
-            pp = Path(p).expanduser().resolve()
-            if pp.is_file():
-                # accept any case extension; prefer .mpq, but don't block if user passes exact file
-                if pp.suffix.lower() == ".mpq":
-                    out.append(pp)
-                else:
-                    out.append(pp)
-            elif pp.is_dir():
-                # case-insensitive scan for *.mpq
-                for cand in pp.rglob("*"):
-                    if cand.is_file() and cand.suffix.lower() == ".mpq":
-                        out.append(cand)
-        return sorted(set(out))
-
-    def _parse_cli_list(self, out: str) -> List[str]:
-        files: List[str] = []
-        for line in out.splitlines():
-            line = line.strip()
-            if not line or line.startswith("Archive:") or line.startswith("Listing"):
-                continue
-            # mpq-tools usually prints file names one per line
-            files.append(line)
-        return files

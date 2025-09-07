@@ -4,10 +4,42 @@ from __future__ import annotations
 import abc
 import asyncio
 import logging
+import os
 import re
+from pathlib import Path
 from typing import Any, Dict, Optional, List
 
 logger = logging.getLogger(__name__)
+
+# Workspace confinement
+WORKSPACE_ROOT = Path(os.environ.get("DEMONOLOGY_ROOT", os.getcwd())).resolve()
+
+
+def _confine(path: Path) -> Path:
+    """Resolve path and ensure it remains under WORKSPACE_ROOT; disallow symlink traversal."""
+    p = (WORKSPACE_ROOT / path).resolve() if not path.is_absolute() else path.resolve()
+    try:
+        p.relative_to(WORKSPACE_ROOT)
+    except Exception:
+        raise PermissionError(f"Path escapes workspace root: {p}")
+    # Disallow symlink traversal for target and parents (best-effort)
+    for parent in [p] + list(p.parents):
+        try:
+            if parent.is_symlink():
+                raise PermissionError(f"Symlinked path not allowed: {parent}")
+        except FileNotFoundError:
+            # Missing parent during creation is okay
+            pass
+    return p
+
+
+def _ok_path(path: Path) -> bool:
+    """Check if path is valid and within workspace bounds."""
+    try:
+        _confine(path)
+        return True
+    except (PermissionError, ValueError, OSError):
+        return False
 
 # ---------------------------
 # Safety filter (command guard)

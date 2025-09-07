@@ -161,6 +161,11 @@ def create_default_registry() -> ToolRegistry:
     if mod and hasattr(mod, "WoWArchiveOrchestratorTool"):
         _try_register(reg, getattr(mod, "WoWArchiveOrchestratorTool"), report)
 
+    # NEW: Auto scene (accepts MPQ file/dir or extracted root; runs end-to-end)
+    mod, _ = _optional_import("wow_auto_scene", ["WoWAutoSceneTool"])
+    if mod and hasattr(mod, "WoWAutoSceneTool"):
+        _try_register(reg, getattr(mod, "WoWAutoSceneTool"), report)
+
     reg._load_report = report  # type: ignore[attr-defined]
     return reg
 
