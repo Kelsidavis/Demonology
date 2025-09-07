@@ -1,46 +1,85 @@
-# Demonology Configuration File
-# Edit this file to customize your mystical CLI experience
+# =====================================================================
+# Demonology Configuration
+# ---------------------------------------------------------------------
+# This file controls API settings, tool permissions, paths, and defaults.
+# Comments are intentionally verbose to make behavior crystal-clear.
+# =====================================================================
 
 api:
-  base_url: "http://127.0.0.1:8080/v1"
-  model: "Qwen-3-14B"
+  # Base HTTP endpoint for your LLM server (OpenAI-compatible schema).
+  base_url: http://127.0.0.1:8080/v1
+  # Default model identifier.
+  model: Qwen-3-14B
+  # Token and decoding parameters.
   max_tokens: 1024
   temperature: 0.7
   top_p: 0.95
-  timeout: 180.0  # Increased to 3 minutes for more stability
-  max_retries: 5  # More retry attempts
-  retry_delay: 3.0  # Longer delay between retries
-  context_length: 26768  # Match your server's context length
-  context_buffer: 2048   # Reserved tokens for response generation
-  auto_trim_threshold: 0.85  # Auto-trim when 85% full
-  smart_trimming: true   # Enable intelligent message preservation
+  # Networking & retry behavior.
+  timeout: 180.0
+  max_retries: 5
+  retry_delay: 3.0
+  # Context window knobs (if supported by your backend).
+  context_length: 26768
+  context_buffer: 2048
 
-ui:
-  theme: "infernal"  # Options: amethyst, infernal, stygian
-  permissive_mode: true
-  auto_save_conversations: true
-  max_history_length: 1000
+security:
+  # Root of the sandbox/workspace. Tools should not read/write outside this.
+  workspace_root: ${WORKSPACE_ROOT}
+  # External commands that tools may invoke. Keep this tight.
+  allow_external_commands:
+    - 'audiveris'
+    - 'r2'
+    - 'radare2'
+    - 'objdump'
+    - 'gdb'
+    - 'analyzeHeadless'
+  # Tool names that are allowed to run. Unlisted tools will be blocked.
+  allow_tools:
+    - 'model3d_generator'
+    - 'sheet_music_omr'
+    - 'heightmap_generator'
+    - 'wow_world_converter'
+  # Absolute paths that tools are permitted to read/write (in addition to workspace_root).
+  path_allowlist:
+    - '/home/k/Desktop/ExtractedWoW'
+    - '/home/k/Desktop/rebellion'
+    - '/home/k/Desktop/Demonology'
+
+web:
+  # Free/anonymous providers available to web tools.
+  providers:
+    - 'duckduckgo'
+    - 'wikipedia'
+    - 'hackernews'
+    - 'stackoverflow'
+    - 'openwebsearch'
 
 tools:
-  enabled: true
-  allowed_tools:
-    - "file_operations"     # File system operations
-    - "code_execution"      # Run code snippets (Python, JS, Bash)
-    - "web_search"          # Search the web for information
-    - "reddit_search"       # Search Reddit discussions
-    - "project_planning"    # Generate and execute project plans
-    - "image_generation"    # Generate AI images for textures, icons, assets
-    - "disassembler"        # Disassemble binary files using various disassemblers
-    - "hex_editor"          # Hex dump, search, and edit binary files
-    - "pattern_search"      # Search for patterns, strings, and signatures in binary files
-    - "debugger"            # Debug binaries using GDB with scripting support
-    - "ghidra_analysis"     # Perform headless binary analysis using Ghidra
-    - "model3d_generator"   # Generate 3d models
-    - "heightmap_generator" # Generate and convert heightmaps for 3D terrain
-  working_directory: null  # null means use current directory
+  # Defaults applied to all tools unless overridden below.
+  defaults:
+    # Where tools should write outputs by default (relative to workspace_root).
+    output_dir: outputs
 
-# Optional: Reddit API configuration for enhanced search
-# Set these environment variables for authenticated Reddit access:
-# REDDIT_CLIENT_ID=your_client_id
-# REDDIT_CLIENT_SECRET=your_client_secret  
-# REDDIT_USER_AGENT=your_app_name
+  # -------------------------------------------------------------------
+  # WoW world converter: WDT/ADT -> OBJ/GLB + 16-bit heightmaps
+  # -------------------------------------------------------------------
+  wow_world_converter:
+    # Default output directory for exported meshes/heightmaps.
+    default_output_dir: wow_exports
+
+  # -------------------------------------------------------------------
+  # 3D model generator (trimesh-based)
+  # -------------------------------------------------------------------
+  model3d_generator:
+    # Default output directory for generated meshes.
+    default_output_dir: models
+
+  # -------------------------------------------------------------------
+  # Sheet music OMR (Audiveris + music21)
+  # -------------------------------------------------------------------
+  sheet_music_omr:
+    # Path to Audiveris CLI (e.g., /opt/audiveris/bin/Audiveris). Can come from env.
+    audiveris_bin: ${AUDIVERIS_BIN}
+    # Tesseract OCR languages (if you use text recognition in scores).
+    tesseract_langs:
+      - 'eng'

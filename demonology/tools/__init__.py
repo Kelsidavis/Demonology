@@ -14,13 +14,10 @@ def _try_register(reg: ToolRegistry, cls: type, report: List[Dict[str, Any]], *,
     tool_name = name_hint or getattr(cls, "__name__", str(cls))
     try:
         tool: Tool = cls()  # type: ignore[call-arg]
-        if hasattr(tool, "is_available"):
-            avail = bool(tool.is_available())
-        else:
-            avail = True
+        avail = bool(tool.is_available()) if hasattr(tool, "is_available") else True
         if avail:
             reg.register(tool)
-            report.append({"tool": tool.name, "status": "registered"})
+            report.append({"tool": getattr(tool, "name", tool_name), "status": "registered"})
         else:
             report.append({"tool": tool_name, "status": "skipped", "reason": "is_available() == False"})
     except Exception as e:
@@ -34,19 +31,30 @@ def _optional_import(module: str, names: List[str]) -> Tuple[Optional[object], D
     except Exception as e:
         return None, {"module": module, "status": "missing", "reason": str(e)}
 
+def _optional_import_any(modules: List[str], names: List[str]) -> Tuple[Optional[object], Dict[str, Any]]:
+    """Try several module names; return the first that imports."""
+    last_status: Dict[str, Any] = {}
+    for modname in modules:
+        mod, status = _optional_import(modname, names)
+        if mod:
+            return mod, status
+        last_status = status
+    return None, last_status or {"module": "|".join(modules), "status": "missing"}
+
 # ---------------- Public helpers ----------------
 
 def remind_agent_capabilities() -> str:
     return (
         "AI Agent Tooling (workspace-scoped):\n"
         "- File ops, code analysis/execution (sandboxed)\n"
-        "- Web search: DuckDuckGo IA, Reddit, Wikipedia, HackerNews, StackOverflow\n"
+        "- Web search: DuckDuckGo IA, Reddit, Wikipedia, HackerNews, StackOverflow, OpenWebSearch\n"
         "- Media: image generation/analysis\n"
         "- Audio: synthesis, analysis, described SFX (key-aware)\n"
         "- Music: sheet OMR → MusicXML/MIDI/WAV (Audiveris/music21)\n"
         "- 3D: model generator/export (OBJ/STL/GLB/PLY via trimesh)\n"
         "- Heightmaps: PNG/JPG → 3D terrain, procedural generation (game engines)\n"
         "- Reverse engineering: objdump/r2/gdb/ghidra (if available)\n"
+        "- WoW maps: WDT/ADT → OBJ/GLB + 16-bit heightmaps\n"
         "Use ToolRegistry.call(name, **kwargs)."
     )
 
@@ -56,23 +64,23 @@ def create_default_registry() -> ToolRegistry:
 
     # Core modules
     mod, _ = _optional_import("file_ops", ["FileOperationsTool"])
-    if mod and hasattr(mod, "FileOperationsTool"): 
+    if mod and hasattr(mod, "FileOperationsTool"):
         _try_register(reg, getattr(mod, "FileOperationsTool"), report)
 
     mod, _ = _optional_import("codebase", ["CodebaseAnalysisTool"])
-    if mod and hasattr(mod, "CodebaseAnalysisTool"): 
+    if mod and hasattr(mod, "CodebaseAnalysisTool"):
         _try_register(reg, getattr(mod, "CodebaseAnalysisTool"), report)
 
     mod, _ = _optional_import("execution", ["CodeExecutionTool"])
-    if mod and hasattr(mod, "CodeExecutionTool"): 
+    if mod and hasattr(mod, "CodeExecutionTool"):
         _try_register(reg, getattr(mod, "CodeExecutionTool"), report)
 
     # Web tools
     mod, _ = _optional_import("web", ["WebSearchTool", "RedditSearchTool"])
     if mod:
-        if hasattr(mod, "WebSearchTool"): 
+        if hasattr(mod, "WebSearchTool"):
             _try_register(reg, getattr(mod, "WebSearchTool"), report)
-        if hasattr(mod, "RedditSearchTool"): 
+        if hasattr(mod, "RedditSearchTool"):
             _try_register(reg, getattr(mod, "RedditSearchTool"), report)
 
     # Free extras: Wikipedia, HackerNews, StackOverflow, OpenWebSearch
@@ -86,15 +94,15 @@ def create_default_registry() -> ToolRegistry:
 
     # Project planning
     mod, _ = _optional_import("project", ["ProjectPlanningTool"])
-    if mod and hasattr(mod, "ProjectPlanningTool"): 
+    if mod and hasattr(mod, "ProjectPlanningTool"):
         _try_register(reg, getattr(mod, "ProjectPlanningTool"), report)
 
     # Media
     mod, _ = _optional_import("media", ["ImageGenerationTool", "ImageAnalysisTool"])
     if mod:
-        if hasattr(mod, "ImageGenerationTool"): 
+        if hasattr(mod, "ImageGenerationTool"):
             _try_register(reg, getattr(mod, "ImageGenerationTool"), report)
-        if hasattr(mod, "ImageAnalysisTool"): 
+        if hasattr(mod, "ImageAnalysisTool"):
             _try_register(reg, getattr(mod, "ImageAnalysisTool"), report)
 
     # Reverse engineering
@@ -115,13 +123,13 @@ def create_default_registry() -> ToolRegistry:
             if hasattr(mod, cls_name):
                 _try_register(reg, getattr(mod, cls_name), report)
 
-    # Music / Sheet OMR
-    mod, _ = _optional_import("sheet_music_omr", ["SheetMusicOMRTool"])
+    # Music / Sheet OMR  (try both module names)
+    mod, _ = _optional_import_any(["sheet_music_omr", "sheet_music"], ["SheetMusicOMRTool"])
     if mod and hasattr(mod, "SheetMusicOMRTool"):
         _try_register(reg, getattr(mod, "SheetMusicOMRTool"), report)
 
-    # 3D Model Generator
-    mod, _ = _optional_import("model3d_generator", ["Model3DGeneratorTool"])
+    # 3D Model Generator (accept legacy alias)
+    mod, _ = _optional_import_any(["model3d_generator", "model3d"], ["Model3DGeneratorTool"])
     if mod and hasattr(mod, "Model3DGeneratorTool"):
         _try_register(reg, getattr(mod, "Model3DGeneratorTool"), report)
 
@@ -129,6 +137,11 @@ def create_default_registry() -> ToolRegistry:
     mod, _ = _optional_import("heightmap_generator", ["HeightmapGeneratorTool"])
     if mod and hasattr(mod, "HeightmapGeneratorTool"):
         _try_register(reg, getattr(mod, "HeightmapGeneratorTool"), report)
+
+    # WoW World Converter (new)
+    mod, _ = _optional_import("wow_world_converter", ["WoWWorldConverterTool"])
+    if mod and hasattr(mod, "WoWWorldConverterTool"):
+        _try_register(reg, getattr(mod, "WoWWorldConverterTool"), report)
 
     reg._load_report = report  # type: ignore[attr-defined]
     return reg
@@ -163,3 +176,4 @@ __all__ = [
     "create_default_registry", "load_all_tools", "load_available_tools",
     "to_openai_tools_format", "load_report", "remind_agent_capabilities",
 ]
+
