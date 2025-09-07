@@ -3,7 +3,7 @@
 
 api:
   base_url: "http://127.0.0.1:8080/v1"
-  model: "Qwen-3-Coder-30B"
+  model: "Qwen-3-14B"
   max_tokens: 1024
   temperature: 0.7
   top_p: 0.95
@@ -16,7 +16,7 @@ api:
   smart_trimming: true   # Enable intelligent message preservation
 
 ui:
-  theme: "amethyst"  # Options: amethyst, infernal, stygian
+  theme: "infernal"  # Options: amethyst, infernal, stygian
   permissive_mode: true
   auto_save_conversations: true
   max_history_length: 1000
@@ -35,6 +35,7 @@ tools:
     - "pattern_search"      # Search for patterns, strings, and signatures in binary files
     - "debugger"            # Debug binaries using GDB with scripting support
     - "ghidra_analysis"     # Perform headless binary analysis using Ghidra
+    - "model3d_generator"   # Generate 3d models
   working_directory: null  # null means use current directory
 
 # Optional: Reddit API configuration for enhanced search

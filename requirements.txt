@@ -51,3 +51,8 @@ Pillow>=10.3.0     # Image processing for textures
 shapely>=2.0.4     # Geometric operations and 2D->3D extrusion
 networkx>=3.0      # Graph operations for trimesh
 rtree>=1.0.0       # Spatial indexing for mesh operations
+
+# --- Optional 3D optimization (for high-quality mode) ---
+# open3d>=0.17.0      # Advanced mesh processing and cleanup
+# pymeshlab>=2022.2   # Professional mesh repair and optimization
+# NOTE: Uncomment above for enhanced mesh optimization capabilities
