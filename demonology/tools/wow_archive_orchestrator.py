@@ -32,6 +32,10 @@ try:
     from .mpq_extractor import MPQExtractorTool  # type: ignore
 except Exception:
     MPQExtractorTool = None  # type: ignore
+try:
+    from .wow_to_unreal import WoWToUnrealTool  # type: ignore
+except Exception:
+    WoWToUnrealTool = None  # type: ignore
 
 class WoWArchiveOrchestratorTool(Tool):
     """
@@ -57,7 +61,8 @@ class WoWArchiveOrchestratorTool(Tool):
                     "mpq_inputs": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Paths to .mpq files or a directory containing them"
+                        "description": "Paths to .mpq files or directories containing them. If empty, auto-discovers MPQ files.",
+                        "default": []
                     },
                     "workspace": {
                         "type": "string",
@@ -66,7 +71,8 @@ class WoWArchiveOrchestratorTool(Tool):
                     },
                     "map_name": {
                         "type": "string",
-                        "description": "Map to export terrain for (e.g., 'Azeroth')"
+                        "description": "Map to export terrain for (e.g., 'Azeroth'). If empty, auto-discovers available maps.",
+                        "default": ""
                     },
                     "downsample": {
                         "type": "integer",
@@ -84,9 +90,19 @@ class WoWArchiveOrchestratorTool(Tool):
                     "build_scene": {
                         "type": "boolean",
                         "default": True
+                    },
+                    "create_unreal_project": {
+                        "type": "boolean",
+                        "description": "Create a complete Unreal Engine project with all converted assets",
+                        "default": False
+                    },
+                    "unreal_project_name": {
+                        "type": "string",
+                        "description": "Name for the Unreal Engine project",
+                        "default": "WoWUnrealProject"
                     }
                 },
-                "required": ["mpq_inputs", "map_name"]
+                "required": []
             }
         }
 
@@ -97,14 +113,20 @@ class WoWArchiveOrchestratorTool(Tool):
         ])
 
     async def execute(self,
-                      mpq_inputs: List[str],
-                      map_name: str,
+                      mpq_inputs: List[str] = None,
+                      map_name: str = "",
                       workspace: str = "wow_workspace",
                       downsample: int = 2,
                       export_models: bool = True,
                       export_terrain: bool = True,
                       build_scene: bool = True,
+                      create_unreal_project: bool = False,
+                      unreal_project_name: str = "WoWUnrealProject",
                       **_) -> Dict[str, Any]:
+        
+        # Handle auto-discovery
+        if mpq_inputs is None:
+            mpq_inputs = []
         ws = Path(workspace).expanduser().resolve()
         extract_root = ws / "extracted"
         exports_root = ws / "exports"
@@ -119,6 +141,23 @@ class WoWArchiveOrchestratorTool(Tool):
         res1 = await mpq.execute(mpq_paths=mpq_inputs, operation="extract_all", dest_dir=str(extract_root))
         if not res1.get("success"):
             return {"success": False, "stage": "extract", "details": res1}
+
+        # Auto-discover map name if not provided
+        if not map_name:
+            maps_dir = extract_root / "World" / "Maps"
+            if maps_dir.exists():
+                available_maps = [d.name for d in maps_dir.iterdir() if d.is_dir()]
+                if available_maps:
+                    # Prefer common maps or take the first one
+                    priority_maps = ["Azeroth", "Kalimdor", "Outland", "Northrend", "Pandaria", "Draenor", "BrokenIsles", "Zandalar", "KulTiras"]
+                    map_name = next((m for m in priority_maps if m in available_maps), available_maps[0])
+                    logger.info(f"Auto-discovered map: {map_name} from {available_maps}")
+                else:
+                    logger.warning("No maps found in extracted data")
+                    map_name = "UnknownMap"
+            else:
+                logger.warning("No World/Maps directory found in extracted data")
+                map_name = "UnknownMap"
 
         terrain_manifest = None
         models_manifest = None
@@ -172,6 +211,28 @@ class WoWArchiveOrchestratorTool(Tool):
                 return {"success": False, "stage": "scene", "details": res4}
             scene_manifest_path = res4.get("output")
 
+        # 5) Unreal Engine Project Creation
+        unreal_project_path = None
+        if create_unreal_project and WoWToUnrealTool is not None:
+            unreal_tool = WoWToUnrealTool()
+            unreal_res = await unreal_tool.execute(
+                wow_path=str(extract_root),
+                project_path=str(ws / unreal_project_name),
+                project_name=unreal_project_name,
+                conversion_settings={
+                    "import_models": export_models,
+                    "import_textures": True,
+                    "import_terrain": export_terrain,
+                    "create_materials": True,
+                    "create_blueprints": True
+                }
+            )
+            if unreal_res.get("success"):
+                unreal_project_path = unreal_res.get("project_path")
+                logger.info(f"Created Unreal Engine project at: {unreal_project_path}")
+            else:
+                logger.warning(f"Unreal Engine project creation failed: {unreal_res.get('error')}")
+
         return {
             "success": True,
             "workspace": str(ws),
@@ -180,5 +241,7 @@ class WoWArchiveOrchestratorTool(Tool):
             "bundles_root": str(bundles_root),
             "terrain_manifest": terrain_manifest,
             "models_manifest": models_manifest,  # may be None if model export failed
-            "scene_manifest": scene_manifest_path
+            "scene_manifest": scene_manifest_path,
+            "unreal_project": unreal_project_path,
+            "discovered_map": map_name
         }

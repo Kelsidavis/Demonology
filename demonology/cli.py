@@ -1056,6 +1056,111 @@ Config file: {cfg.config_path}
         
         return cleaned
     
+    async def _handle_intelligent_workflows(self, user_input: str) -> bool:
+        """
+        Detect and handle intelligent workflows based on natural language patterns.
+        Returns True if workflow was handled, False otherwise.
+        """
+        input_lower = user_input.lower().strip()
+        
+        # Pattern: "extract all mpq convert all assets into unreal engine"
+        mpq_unreal_patterns = [
+            "extract all mpq",
+            "extract mpq",
+            "convert all assets",
+            "unreal engine project",
+            "wow to unreal",
+            "convert wow to unreal"
+        ]
+        
+        if any(pattern in input_lower for pattern in mpq_unreal_patterns):
+            self.ui.console.print("[bold cyan]🎯 Intelligent workflow detected: Complete WoW to Unreal Engine conversion![/bold cyan]")
+            self.ui.console.print("[dim]Automatically triggering WoW Archive Orchestrator...[/dim]\n")
+            
+            # Trigger the WoW Archive Orchestrator with smart defaults
+            try:
+                orchestrator_args = {
+                    "mpq_inputs": [],  # Auto-discovery
+                    "map_name": "",   # Auto-discovery  
+                    "workspace": "wow_unreal_workspace",
+                    "export_models": True,
+                    "export_terrain": True,
+                    "build_scene": True,
+                    "create_unreal_project": True,
+                    "unreal_project_name": "WoWUnrealProject"
+                }
+                
+                self.ui.console.print(f"[bold magenta]🔥 Binding demon [wow_archive_orchestrator] with dark ritual: {orchestrator_args} 🔥[/bold magenta]")
+                await self.ui.start_loading(f"Invoking daemon of wow_archive_orchestrator... blood sacrifice accepted...")
+                
+                result = await self.tool_registry.execute_tool("wow_archive_orchestrator", **orchestrator_args)
+                await self.ui.stop_loading()
+                
+                if result.get("success", False):
+                    self.ui.console.print(f"[bold green]👹 DEMON [wow_archive_orchestrator] BOWS TO YOUR WILL - POWER CHANNELED 👹[/bold green]")
+                    self.ui.console.print(f"[bold green]✅ Complete WoW to Unreal Engine conversion completed![/bold green]")
+                    if result.get("unreal_project"):
+                        self.ui.console.print(f"[bold green]🎮 Unreal Engine project: {result.get('unreal_project')}[/bold green]")
+                    if result.get("discovered_map"):
+                        self.ui.console.print(f"[bold green]🗺️ Processed map: {result.get('discovered_map')}[/bold green]")
+                else:
+                    err = result.get("error", "Ancient evil")
+                    self.ui.console.print(f"[bold red]💀 DEMON [wow_archive_orchestrator] DEFIES THE SUMMONING - CURSE BACKFIRED: {err} 💀[/bold red]")
+                
+                # Add workflow result to history for context
+                workflow_message = f"Completed intelligent workflow: WoW to Unreal Engine conversion. Result: {result.get('success', False)}"
+                self.conversation_history.append({"role": "assistant", "content": workflow_message})
+                
+                return True  # Workflow was handled
+                
+            except Exception as e:
+                logger.error(f"Intelligent workflow failed: {e}")
+                self.ui.display_error(f"Intelligent workflow failed: {str(e)}")
+                return False
+        
+        # Pattern: "extract mpq files" or "list mpq contents"  
+        mpq_simple_patterns = [
+            "extract mpq files",
+            "list mpq contents", 
+            "show mpq files",
+            "extract mpq"
+        ]
+        
+        if any(pattern in input_lower for pattern in mpq_simple_patterns) and "unreal" not in input_lower:
+            self.ui.console.print("[bold cyan]🎯 MPQ extraction workflow detected![/bold cyan]")
+            
+            # Determine operation based on keywords
+            operation = "extract_all" if any(word in input_lower for word in ["extract", "unpack"]) else "list"
+            
+            try:
+                mpq_args = {
+                    "mpq_paths": [],  # Auto-discovery
+                    "operation": operation,
+                    "dest_dir": "extracted_mpqs",
+                    "overwrite": True
+                }
+                
+                self.ui.console.print(f"[bold magenta]🔥 Binding demon [mpq_extractor] with dark ritual: {mpq_args} 🔥[/bold magenta]")
+                await self.ui.start_loading("Invoking MPQ extraction daemon...")
+                
+                result = await self.tool_registry.execute_tool("mpq_extractor", **mpq_args) 
+                await self.ui.stop_loading()
+                
+                if result.get("success", False):
+                    self.ui.console.print(f"[bold green]👹 DEMON [mpq_extractor] BOWS TO YOUR WILL - POWER CHANNELED 👹[/bold green]")
+                else:
+                    err = result.get("error", "Ancient evil")
+                    self.ui.console.print(f"[bold red]💀 DEMON [mpq_extractor] DEFIES THE SUMMONING - CURSE BACKFIRED: {err} 💀[/bold red]")
+                
+                return True
+                
+            except Exception as e:
+                logger.error(f"MPQ workflow failed: {e}")
+                self.ui.display_error(f"MPQ workflow failed: {str(e)}")
+                return False
+        
+        return False  # No workflow detected
+    
     def _show_logs(self):
         """Display log file locations for debugging."""
         self.ui.display_info(f"📋 Log Files for Error Review:")
@@ -1875,6 +1980,11 @@ Config file: {cfg.config_path}
 
 # Context management now handled by _auto_manage_context()
                 
+                # Detect complex workflows and auto-trigger appropriate tools
+                workflow_handled = await self._handle_intelligent_workflows(user_input)
+                if workflow_handled:
+                    continue
+
                 self.conversation_history.append({"role": "user", "content": user_input})
                 try:
                     self._history_add(user_input)

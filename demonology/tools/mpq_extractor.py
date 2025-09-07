@@ -40,7 +40,8 @@ class MPQExtractorTool(Tool):
                     "mpq_paths": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "List of .MPQ files or a directory containing them"
+                        "description": "List of .MPQ files or directories containing them. If empty, auto-discovers MPQ files in common locations.",
+                        "default": []
                     },
                     "operation": {
                         "type": "string",
@@ -72,19 +73,54 @@ class MPQExtractorTool(Tool):
                         "default": True
                     }
                 },
-                "required": ["mpq_paths"]
+                "required": []
             }
         }
 
     def _discover_inputs(self, mpq_paths: List[str]) -> List[Path]:
         found: List[Path] = []
-        for raw in mpq_paths:
-            p = _confine(Path(raw))
-            if p.is_dir():
-                found.extend([x for x in p.glob("**/*.MPQ") if x.is_file()])
-                found.extend([x for x in p.glob("**/*.mpq") if x.is_file()])
-            elif p.is_file() and p.suffix.lower() == ".mpq":
-                found.append(p)
+        
+        # If no paths provided, auto-discover MPQ files
+        if not mpq_paths:
+            print("🔍 Auto-discovering MPQ files in common locations...")
+            search_paths = [
+                Path.cwd(),  # Current directory
+                Path.home() / "Desktop",  # Desktop
+                Path("/home") / Path.cwd().parts[2] / "Desktop" if len(Path.cwd().parts) > 2 else Path.home() / "Desktop",
+                Path.cwd() / "Data",  # WoW Data directory
+                Path.cwd() / "data",
+                Path.cwd() / "mpqs",
+                Path.cwd() / "MPQs"
+            ]
+            
+            for search_path in search_paths:
+                try:
+                    if search_path.exists() and search_path.is_dir():
+                        # Search for MPQ files (case-insensitive)
+                        mpq_files = list(search_path.glob("**/*.MPQ")) + list(search_path.glob("**/*.mpq"))
+                        found.extend([x for x in mpq_files if x.is_file()])
+                        
+                        # Limit to first 50 files to avoid overwhelming
+                        if len(found) > 50:
+                            found = found[:50]
+                            break
+                except (PermissionError, OSError):
+                    continue
+            
+            if found:
+                print(f"🎯 Auto-discovered {len(found)} MPQ files")
+            else:
+                print("❌ No MPQ files found in auto-discovery")
+        else:
+            # Use provided paths
+            for raw in mpq_paths:
+                p = _confine(Path(raw))
+                if p.is_dir():
+                    found.extend([x for x in p.glob("**/*.MPQ") if x.is_file()])
+                    found.extend([x for x in p.glob("**/*.mpq") if x.is_file()])
+                elif p.is_file() and p.suffix.lower() == ".mpq":
+                    found.append(p)
+        
         return found
 
     def _backend_can_python(self) -> bool:
@@ -252,7 +288,7 @@ class MPQExtractorTool(Tool):
 
     async def execute(
         self,
-        mpq_paths: List[str],
+        mpq_paths: List[str] = None,
         operation: str = "list",
         dest_dir: str = "extracted",
         overwrite: bool = False,
@@ -261,6 +297,9 @@ class MPQExtractorTool(Tool):
         quiet: bool = True,
         **_: Any
     ) -> Dict[str, Any]:
+        # Handle None input (auto-discovery mode)
+        if mpq_paths is None:
+            mpq_paths = []
         # Resolve candidates
         paths = self._discover_inputs(mpq_paths)
         if not paths:
