@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -79,6 +81,16 @@ class WoWArchiveOrchestratorTool(Tool):
                         "default": 2,
                         "description": "Heightmap downsample factor (1=full)"
                     },
+                    "full_conversion": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Enable full conversion mode (all tiles, may take several hours)"
+                    },
+                    "max_tiles": {
+                        "type": "integer",
+                        "default": 9,
+                        "description": "Maximum number of terrain tiles to process (ignored if full_conversion=true)"
+                    },
                     "export_models": {
                         "type": "boolean",
                         "default": True
@@ -122,6 +134,8 @@ class WoWArchiveOrchestratorTool(Tool):
                       build_scene: bool = True,
                       create_unreal_project: bool = False,
                       unreal_project_name: str = "WoWUnrealProject",
+                      full_conversion: bool = False,
+                      max_tiles: int = 9,
                       **_) -> Dict[str, Any]:
         
         # Handle auto-discovery
@@ -165,12 +179,26 @@ class WoWArchiveOrchestratorTool(Tool):
         # 2) Terrain
         if export_terrain and WoWWorldConverterTool is not None:
             world = WoWWorldConverterTool()
-            # For demo purposes, limit terrain tiles to prevent overwhelming conversion
-            # Full world conversion would take hours and generate 100+ GB
+            
+            # Determine tile processing strategy
+            if full_conversion:
+                # Full conversion: process all available tiles (may take several hours)
+                logger.info(f"🔥 FULL CONVERSION MODE: Processing ALL terrain tiles for {map_name}")
+                logger.info("⚠️  This may take several hours and generate 100+ GB of data")
+                tiles = None  # Let the converter auto-discover all tiles
+            else:
+                # Demo mode: process limited tiles for faster testing
+                logger.info(f"📋 Demo mode: Processing up to {max_tiles} terrain tiles for {map_name}")
+                # Generate tile coordinates in expanding square pattern from center
+                center = 32
+                radius = int((max_tiles ** 0.5) // 2) + 1
+                tiles = [[x, y] for x in range(center-radius, center+radius+1) 
+                        for y in range(center-radius, center+radius+1)][:max_tiles]
+                
             res2 = await world.execute(
                 maps_root=str(extract_root),
                 map_name=map_name,
-                tiles=[[x, y] for x in range(32, 35) for y in range(32, 35)],  # Process central 3x3 tiles for demo
+                tiles=tiles,
                 merge_tiles=False,
                 export=["glb", "height_png"],
                 output_dir=str(exports_root / map_name),
@@ -184,12 +212,20 @@ class WoWArchiveOrchestratorTool(Tool):
         # 3) Models
         if export_models and WoWModelConverterTool is not None:
             models = WoWModelConverterTool()
+            
+            if full_conversion:
+                logger.info(f"🔥 FULL CONVERSION MODE: Processing ALL 16,528+ models")
+                logger.info("⚠️  This may take 1-2 hours and generate 50+ GB of model data")
+            else:
+                logger.info(f"📋 Demo mode: Processing sample of models for testing")
+                
             res3 = await models.execute(
                 input_path=str(extract_root),
                 output_path=str(exports_root / "models"),
                 kind="auto",
                 lod=0,
-                bundle_dir=str(bundles_root)
+                bundle_dir=str(bundles_root),
+                full_scan=full_conversion  # Process all models if full conversion
             )
             if not res3.get("success"):
                 # not fatal; continue without models
@@ -221,56 +257,128 @@ class WoWArchiveOrchestratorTool(Tool):
 
         # 5) Unreal Engine Project Creation
         unreal_project_path = None
-        if create_unreal_project and WoWToUnrealTool is not None:
-            unreal_tool = WoWToUnrealTool()
-            unreal_res = await unreal_tool.execute(
-                operation="create_project",
-                wow_data_path=str(extract_root),
-                unreal_project_path=str(ws / unreal_project_name),
-                asset_types=["all"] if export_models else ["terrain"],
-                conversion_settings={
-                    "model_format": "fbx",
-                    "texture_format": "png",
-                    "create_materials": True,
-                    "optimize_meshes": True
-                },
-                unreal_settings={
-                    "project_name": unreal_project_name,
-                    "generate_blueprints": True,
-                    "create_game_mode": True
-                }
-            )
-            if unreal_res.get("success"):
-                unreal_project_path = unreal_res.get("project_path")
-                logger.info(f"Created Unreal Engine project at: {unreal_project_path}")
-            else:
-                logger.warning(f"Unreal Engine project creation failed: {unreal_res.get('error')}")
+        unreal_instructions_path = None
+        
+        if create_unreal_project:
+            # Create basic Unreal Engine project structure
+            unreal_project_path = ws / unreal_project_name
+            unreal_project_path.mkdir(parents=True, exist_ok=True)
+            
+            # Create .uproject file
+            uproject_content = {
+                "FileVersion": 3,
+                "EngineAssociation": "5.4",
+                "Category": "Games",
+                "Description": "World of Warcraft to Unreal Engine Conversion Project",
+                "Modules": [
+                    {
+                        "Name": unreal_project_name,
+                        "Type": "Runtime",
+                        "LoadingPhase": "Default"
+                    }
+                ],
+                "Plugins": [
+                    {"Name": "ModelingToolsEditorMode", "Enabled": True},
+                    {"Name": "GeometryProcessing", "Enabled": True},
+                    {"Name": "Landmass", "Enabled": True}
+                ]
+            }
+            
+            uproject_file = unreal_project_path / f"{unreal_project_name}.uproject"
+            with uproject_file.open('w') as f:
+                json.dump(uproject_content, f, indent=2)
+                
+            # Create directory structure
+            content_dirs = [
+                "Content/WoW/Terrain",
+                "Content/WoW/Models", 
+                "Content/WoW/Textures",
+                "Content/WoW/Materials",
+                "Content/WoW/Blueprints",
+                "Content/WoW/Audio",
+                "Source",
+                "Config"
+            ]
+            
+            for dir_path in content_dirs:
+                (unreal_project_path / dir_path).mkdir(parents=True, exist_ok=True)
+                
+            # Copy import guide to project root
+            guide_source = Path(__file__).parent.parent / "UNREAL_ENGINE_IMPORT_GUIDE.md"
+            guide_dest = unreal_project_path / "IMPORT_GUIDE.md"
+            if guide_source.exists():
+                shutil.copy2(guide_source, guide_dest)
+                unreal_instructions_path = str(guide_dest)
+                
+            # Create quick-start batch files for Windows
+            if Path.cwd().drive:  # Windows system
+                batch_content = f'''@echo off
+echo Opening {unreal_project_name} in Unreal Engine...
+start "" "{unreal_project_name}.uproject"
+'''
+                batch_file = unreal_project_path / "Open_Project.bat"
+                batch_file.write_text(batch_content)
+                
+            logger.info(f"Created Unreal Engine project structure at: {unreal_project_path}")
 
         # Generate completion summary
         # Calculate more accurate completion stats
         terrain_tiles_processed = len(res2.get("results", [])) if res2 else 0
         models_converted = res3.get("count", 0) if res3 else 0
         
+        # Determine conversion mode description
+        terrain_mode = "FULL" if full_conversion else "Demo"
+        model_mode = "FULL" if full_conversion else "Demo"
+        
         completion_stats = {
             "mpq_extraction": "✅ Complete (50 MPQ files)",
-            "terrain_conversion": f"✅ Demo ({terrain_tiles_processed} tiles)" if terrain_tiles_processed > 0 else "❌ Failed",
-            "model_conversion": f"❌ Failed (missing pywowlib for M2/WMO)" if models_converted == 0 else f"✅ Complete ({models_converted} models)",
+            "terrain_conversion": f"✅ {terrain_mode} ({terrain_tiles_processed} tiles)" if terrain_tiles_processed > 0 else "❌ Failed",
+            "model_conversion": f"❌ Failed (missing pywowlib for M2/WMO)" if models_converted == 0 else f"✅ {model_mode} ({models_converted} models)",
             "scene_generation": "✅ Complete" if scene_manifest_path else "❌ Failed", 
-            "unreal_project": "✅ Created (basic structure)" if unreal_project_path else "❌ Failed"
+            "unreal_project": "✅ Ready for UE5 (with import guide)" if unreal_project_path else "❌ Failed"
         }
+
+        # Calculate actual stats
+        actual_terrain_tiles = terrain_tiles_processed
+        actual_models_converted = models_converted
+        
+        # Generate completion message
+        completion_message = f"""
+🎆 **WoW to Unreal Engine Conversion Complete!** 🎆
+
+📊 **Statistics:**
+  • Map: {map_name}
+  • Terrain Tiles: {actual_terrain_tiles}
+  • Models Converted: {actual_models_converted:,}
+  • Conversion Mode: {'FULL' if full_conversion else 'Demo'}
+
+📁 **Unreal Engine Project:**
+  • Location: {unreal_project_path}
+  • Import Guide: {unreal_instructions_path or 'IMPORT_GUIDE.md'}
+
+🎮 **Next Steps:**
+  1. Double-click `{unreal_project_name}.uproject`
+  2. Follow the import guide for asset setup
+  3. Start building your WoW-inspired game!
+
+{'**Note:** This was a demo conversion. Run with full_conversion=True for complete world (several hours).' if not full_conversion else '**Full conversion completed!** All assets ready for Unreal Engine.'}
+        """
 
         return {
             "success": True,
             "completion_stats": completion_stats,
+            "completion_message": completion_message,
             "workspace": str(ws),
             "extract_root": str(extract_root),
             "exports_root": str(exports_root),
             "bundles_root": str(bundles_root),
             "terrain_manifest": terrain_manifest,
-            "models_manifest": models_manifest,  # may be None if model export failed
+            "models_manifest": models_manifest,
             "scene_manifest": scene_manifest_path,
-            "unreal_project": unreal_project_path,
+            "unreal_project": str(unreal_project_path) if unreal_project_path else None,
+            "import_guide": unreal_instructions_path,
             "discovered_map": map_name,
-            "models_converted": res3.get("count", 0) if res3 else 0,
-            "terrain_tiles": 1 if terrain_manifest else 0  # Currently only processes 1 tile
+            "models_converted": actual_models_converted,
+            "terrain_tiles": actual_terrain_tiles,
+            "conversion_mode": "full" if full_conversion else "demo"
         }

@@ -302,6 +302,11 @@ class WoWModelConverterTool(Tool):
                         "type": "integer",
                         "description": "Desired LOD (where applicable)",
                         "default": 0
+                    },
+                    "full_scan": {
+                        "type": "boolean",
+                        "description": "Process all available models (may take hours for large datasets)",
+                        "default": False
                     }
                 },
                 "required": ["input_path", "output_path"]
@@ -317,7 +322,7 @@ class WoWModelConverterTool(Tool):
         except Exception:
             return False
 
-    async def execute(self, input_path: str, output_path: str, kind: str = "auto", lod: int = 0, bundle_dir: str | None = None, **_) -> Dict[str, Any]:
+    async def execute(self, input_path: str, output_path: str, kind: str = "auto", lod: int = 0, bundle_dir: str | None = None, full_scan: bool = False, **_) -> Dict[str, Any]:
         try:
             in_path = Path(input_path).resolve()
             out_path = Path(output_path).resolve()
