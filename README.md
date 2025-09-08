@@ -69,13 +69,3 @@ black demonology/ && isort demonology/
 ```
 
 Happy conjuring! 🔮
-
-
-
-Copyright (c) 2025 Kelsi Davis
-
-Permission is granted to use, copy, modify, and distribute this software 
-for personal, educational, or research purposes only. Commercial use, 
-including selling, offering paid services, or integrating into 
-commercial products, requires prior written permission from the author.
-
