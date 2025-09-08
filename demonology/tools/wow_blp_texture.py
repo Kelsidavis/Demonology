@@ -77,23 +77,33 @@ class WoWBLPTextureTool(Tool):
         if len(data) < 148:
             raise ValueError("Invalid BLP file: too short")
         
-        # BLP header structure
-        header = struct.unpack('<4sII4xIIIIII16I', data[:148])
+        # BLP header structure - corrected for BLP2
+        # BLP2 header: signature(4), type(4), compression(1), alpha_bits(1), alpha_type(1), has_mipmaps(1),
+        # width(4), height(4), mipmap_offsets(16*4), mipmap_sizes(16*4)
         
-        signature = header[0]
+        signature = struct.unpack('<4s', data[:4])[0]
         if signature not in [b'BLP1', b'BLP2']:
             raise ValueError(f"Invalid BLP signature: {signature}")
         
+        # Parse basic header
+        basic_header = struct.unpack('<4sIBBBBII', data[:20])
+        
+        # Parse mipmap offsets and sizes (16 each)
+        mipmap_offsets = struct.unpack('<16I', data[20:84])
+        mipmap_sizes = struct.unpack('<16I', data[84:148])
+        
         return {
             "signature": signature.decode('ascii'),
-            "type": header[1],  # 0=JPEG, 1=Palettized
-            "compression": header[2],  # Compression type
-            "alpha_bits": header[3],  # Alpha channel depth
-            "width": header[4],
-            "height": header[5],
-            "mipmap_count": header[6],
-            "mipmap_offsets": header[7:23],  # 16 mipmap offsets
-            "mipmap_sizes": header[23:39] if len(header) > 23 else [0]*16
+            "type": basic_header[1],  # Compression type
+            "compression": basic_header[2],  # Compression method
+            "alpha_bits": basic_header[3],  # Alpha channel depth  
+            "alpha_type": basic_header[4],  # Alpha type
+            "has_mipmaps": basic_header[5],  # Has mipmaps
+            "width": basic_header[6],
+            "height": basic_header[7],
+            "mipmap_count": sum(1 for offset in mipmap_offsets if offset > 0),
+            "mipmap_offsets": list(mipmap_offsets),
+            "mipmap_sizes": list(mipmap_sizes)
         }
 
     def _decompress_dxt(self, data: bytes, width: int, height: int, dxt_type: int) -> bytes:

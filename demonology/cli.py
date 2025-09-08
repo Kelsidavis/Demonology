@@ -1098,11 +1098,29 @@ Config file: {cfg.config_path}
                 
                 if result.get("success", False):
                     self.ui.console.print(f"[bold green]👹 DEMON [wow_archive_orchestrator] BOWS TO YOUR WILL - POWER CHANNELED 👹[/bold green]")
-                    self.ui.console.print(f"[bold green]✅ Complete WoW to Unreal Engine conversion completed![/bold green]")
+                    
+                    # Show detailed completion stats
+                    completion_stats = result.get("completion_stats", {})
+                    self.ui.console.print(f"[bold cyan]📊 Conversion Results:[/bold cyan]")
+                    for component, status in completion_stats.items():
+                        color = "green" if "✅" in status else ("yellow" if "Partial" in status else "red")
+                        self.ui.console.print(f"  • {component.replace('_', ' ').title()}: [{color}]{status}[/{color}]")
+                    
+                    # Show stats
+                    models_count = result.get("models_converted", 0)
+                    terrain_tiles = result.get("terrain_tiles", 0)
+                    self.ui.console.print(f"[dim]Stats: {models_count:,} models, {terrain_tiles} terrain tiles[/dim]")
+                    
                     if result.get("unreal_project"):
                         self.ui.console.print(f"[bold green]🎮 Unreal Engine project: {result.get('unreal_project')}[/bold green]")
                     if result.get("discovered_map"):
-                        self.ui.console.print(f"[bold green]🗺️ Processed map: {result.get('discovered_map')}[/bold green]")
+                        self.ui.console.print(f"[bold cyan]🗺️ Processed map: {result.get('discovered_map')}[/bold cyan]")
+                        
+                    # Warning about incomplete conversion
+                    if models_count == 0:
+                        self.ui.console.print(f"[bold yellow]⚠️  Model conversion incomplete - install pywowlib for full M2/WMO support[/bold yellow]")
+                    
+                    self.ui.console.print(f"[dim]💡 This is a demo conversion. Full conversion would process 700+ terrain tiles and 16,000+ models (several hours)[/dim]")
                 else:
                     err = result.get("error", "Ancient evil")
                     self.ui.console.print(f"[bold red]💀 DEMON [wow_archive_orchestrator] DEFIES THE SUMMONING - CURSE BACKFIRED: {err} 💀[/bold red]")

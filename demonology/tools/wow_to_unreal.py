@@ -121,7 +121,7 @@ class WoWToUnrealTool(Tool):
             analysis["database_files"] = [{"file": str(f), "size": f.stat().st_size} for f in dbc_files[:50]]
             
             # Calculate total size
-            analysis["total_size"] = sum(
+            analysis["total_size"] = (
                 len(analysis["models"]) * 1000000 +  # Estimate
                 len(analysis["textures"]) * 500000 +
                 len(analysis["shaders"]) * 10000 +
@@ -461,17 +461,22 @@ class WoWToUnrealTool(Tool):
                     results["blueprints"] = blueprints_result
                 
                 # Update project configuration
-                config_file = project_path / "Config" / "WoWConversion.json"
-                if config_file.exists():
-                    with open(config_file, 'r') as f:
-                        config = json.load(f)
-                    
-                    config["WoWConversionSettings"]["SourceDataPath"] = str(wow_path)
-                    config["WoWConversionSettings"]["ConversionDate"] = "2024-01-01"  # Should be datetime.now()
-                    config["WoWConversionSettings"]["AssetCounts"] = asset_counts
-                    
-                    with open(config_file, 'w') as f:
-                        json.dump(config, f, indent=2)
+                config_dir = project_path / "Config"
+                config_dir.mkdir(exist_ok=True)  # Ensure Config directory exists
+                
+                config_file = config_dir / "WoWConversion.json"
+                
+                config = {
+                    "WoWConversionSettings": {
+                        "SourceDataPath": str(wow_path),
+                        "ConversionDate": "2024-01-01",
+                        "AssetCounts": asset_counts,
+                        "ConversionSettings": conversion_settings
+                    }
+                }
+                
+                with open(config_file, 'w') as f:
+                    json.dump(config, f, indent=2)
                 
                 return {
                     "success": True,

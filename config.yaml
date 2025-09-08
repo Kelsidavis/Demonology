@@ -1,91 +1,64 @@
-# =====================================================================
-# Demonology Configuration
-# ---------------------------------------------------------------------
-# This file controls API settings, tool permissions, paths, and defaults.
-# Comments are intentionally verbose to make behavior crystal-clear.
-# =====================================================================
-
 api:
-  # Base HTTP endpoint for your LLM server (OpenAI-compatible schema).
   base_url: http://127.0.0.1:8080/v1
-  # Default model identifier.
   model: Qwen-3-14B
-  # Token and decoding parameters.
   max_tokens: 1024
   temperature: 0.7
   top_p: 0.95
-  # Networking & retry behavior.
   timeout: 180.0
   max_retries: 5
   retry_delay: 3.0
-  # Context window knobs (if supported by your backend).
   context_length: 26768
   context_buffer: 2048
 
 security:
-  # Root of the sandbox/workspace. Tools should not read/write outside this.
-  workspace_root: ${WORKSPACE_ROOT}
-  # External commands that tools may invoke. Keep this tight.
-  allow_external_commands:
-    - 'audiveris'
-    - 'r2'
-    - 'radare2'
-    - 'objdump'
-    - 'gdb'
-    - 'analyzeHeadless'
-    - 'mpq'   # if you’ll use the mpq-tools CLI backend
+  # Pin this to your actual workspace path so the guard knows where “inside” is.
+  workspace_root: /home/k/Desktop/rewow
 
-  # Tool names that are allowed to run. Unlisted tools will be blocked.
+  allow_external_commands:
+    - audiveris
+    - r2
+    - radare2
+    - objdump
+    - gdb
+    - analyzeHeadless
+    - mpq       # mpq-tools (if installed as `mpq`)
+    - mpqcli    # StormLib-based CLI (if installed as `mpqcli`)
+
   allow_tools:
-    - 'model3d_generator'
-    - 'sheet_music_omr'
-    - 'heightmap_generator'
-    - 'wow_world_converter'
-    - 'wow_model_converter'
-    - 'wow_scene_bundler'
-    - 'mpq_extractor'
-    - 'wow_archive_orchestrator'
-  # Absolute paths that tools are permitted to read/write (in addition to workspace_root).
+    - model3d_generator
+    - sheet_music_omr
+    - heightmap_generator
+    - wow_world_converter
+    - wow_model_converter
+    - wow_scene_bundler
+    - mpq_extractor
+    - wow_archive_orchestrator
+    - wow_auto_scene
+    # Optional helpers if you plan to list dirs/read files in the UI:
+    - file_operations
+    - codebase_analysis
+
+  # (Optional) extra places you want readable; keeping it minimal is safer.
   path_allowlist:
-    - '/home/k/Desktop/ExtractedWoW'
-    - '/home/k/Desktop/rebellion'
-    - '/home/k/Desktop/Demonology'
+    - /home/k/Desktop/rebellion
+    - /home/k/Desktop/Demonology
+    - /home/k/Desktop/ExtractedWoW
+    - /home/k/Desktop/rewow     # add your actual workspace explicitly
 
 web:
-  # Free/anonymous providers available to web tools.
-  providers:
-    - 'duckduckgo'
-    - 'wikipedia'
-    - 'hackernews'
-    - 'stackoverflow'
-    - 'openwebsearch'
+  providers: [duckduckgo, wikipedia, hackernews, stackoverflow, openwebsearch]
 
 tools:
-  # Defaults applied to all tools unless overridden below.
   defaults:
-    # Where tools should write outputs by default (relative to workspace_root).
     output_dir: outputs
 
-  # -------------------------------------------------------------------
-  # WoW world converter: WDT/ADT -> OBJ/GLB + 16-bit heightmaps
-  # -------------------------------------------------------------------
   wow_world_converter:
-    # Default output directory for exported meshes/heightmaps.
     default_output_dir: wow_exports
 
-  # -------------------------------------------------------------------
-  # 3D model generator (trimesh-based)
-  # -------------------------------------------------------------------
   model3d_generator:
-    # Default output directory for generated meshes.
     default_output_dir: models
 
-  # -------------------------------------------------------------------
-  # Sheet music OMR (Audiveris + music21)
-  # -------------------------------------------------------------------
   sheet_music_omr:
-    # Path to Audiveris CLI (e.g., /opt/audiveris/bin/Audiveris). Can come from env.
     audiveris_bin: ${AUDIVERIS_BIN}
-    # Tesseract OCR languages (if you use text recognition in scores).
-    tesseract_langs:
-      - 'eng'
+    tesseract_langs: [eng]
+

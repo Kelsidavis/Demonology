@@ -22,6 +22,7 @@ echo "Threads: $THREADS | Batch: $BATCH_SIZE"
 echo "Parallel Slots: $PARALLEL | Keep-Alive: ${KEEP_ALIVE}s"
 echo "Cache: ${CACHE_TYPE_K}/${CACHE_TYPE_V} (quantized) | Flash Attention: Enabled"
 
+export CUDA_VISIBLE_DEVICES=0
 
 # Function to handle cleanup on exit
 cleanup() {

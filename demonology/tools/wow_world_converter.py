@@ -270,8 +270,15 @@ class WoWWorldConverterTool(Tool):
             return {"success": False, "error": f"Map dir not found: {map_dir}"}
 
         discovered = _list_tiles_from_wdt(wdt_path) if wdt_path.exists() else None
-        if not discovered:
-            discovered = _list_tiles_from_fs(map_dir, map_name)
+        fs_tiles = _list_tiles_from_fs(map_dir, map_name)
+        
+        # If filesystem found more tiles than WDT, use filesystem (WDT parsing might be incomplete)
+        if fs_tiles and len(fs_tiles) > len(discovered or []):
+            logger.info(f"Filesystem found {len(fs_tiles)} tiles vs WDT {len(discovered or [])} - using filesystem discovery")
+            discovered = fs_tiles
+        elif not discovered:
+            discovered = fs_tiles
+            
         if not discovered:
             return {"success": False, "error": "No tiles found via WDT or file system. Ensure your MPQs are extracted to World/Maps/<Map>."}
 
