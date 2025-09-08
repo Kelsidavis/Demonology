@@ -22,9 +22,10 @@ try:
     else:
         # try vendored third_party/pywowlib
         here = Path(__file__).resolve()
-        vendored = here.parents[1] / "third_party" / "pywowlib"
-        if vendored.is_dir() and str(vendored) not in sys.path:
-            sys.path.insert(0, str(vendored))
+        vendored_parent = here.parents[1] / "third_party"
+        vendored = vendored_parent / "pywowlib"
+        if vendored.is_dir() and str(vendored_parent) not in sys.path:
+            sys.path.insert(0, str(vendored_parent))
     from pywowlib import m2_file, wmo_file  # type: ignore
     _PYWOWLIB = True
 except Exception:
