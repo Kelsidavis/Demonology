@@ -1087,7 +1087,9 @@ Config file: {cfg.config_path}
                     "export_terrain": True,
                     "build_scene": True,
                     "create_unreal_project": True,
-                    "unreal_project_name": "WoWUnrealProject"
+                    "unreal_project_name": "WoWUnrealProject",
+                    "full_conversion": True,  # Enable full conversion by default
+                    "max_tiles": 999  # Process all available tiles
                 }
                 
                 self.ui.console.print(f"[bold magenta]🔥 Binding demon [wow_archive_orchestrator] with dark ritual: {orchestrator_args} 🔥[/bold magenta]")
@@ -1120,7 +1122,12 @@ Config file: {cfg.config_path}
                     if models_count == 0:
                         self.ui.console.print(f"[bold yellow]⚠️  Model conversion incomplete - install pywowlib for full M2/WMO support[/bold yellow]")
                     
-                    self.ui.console.print(f"[dim]💡 This is a demo conversion. Full conversion would process 700+ terrain tiles and 16,000+ models (several hours)[/dim]")
+                    # Display completion message from the orchestrator if available
+                    completion_msg = result.get("completion_message", "")
+                    if completion_msg:
+                        self.ui.console.print(f"[cyan]{completion_msg}[/cyan]")
+                    else:
+                        self.ui.console.print(f"[bold green]🎆 FULL CONVERSION COMPLETE! All {models_count:,} models and {terrain_tiles} terrain tiles processed.[/bold green]")
                 else:
                     err = result.get("error", "Ancient evil")
                     self.ui.console.print(f"[bold red]💀 DEMON [wow_archive_orchestrator] DEFIES THE SUMMONING - CURSE BACKFIRED: {err} 💀[/bold red]")

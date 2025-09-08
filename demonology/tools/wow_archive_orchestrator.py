@@ -83,7 +83,7 @@ class WoWArchiveOrchestratorTool(Tool):
                     },
                     "full_conversion": {
                         "type": "boolean",
-                        "default": False,
+                        "default": True,
                         "description": "Enable full conversion mode (all tiles, may take several hours)"
                     },
                     "max_tiles": {
@@ -106,7 +106,7 @@ class WoWArchiveOrchestratorTool(Tool):
                     "create_unreal_project": {
                         "type": "boolean",
                         "description": "Create a complete Unreal Engine project with all converted assets",
-                        "default": False
+                        "default": True
                     },
                     "unreal_project_name": {
                         "type": "string",
